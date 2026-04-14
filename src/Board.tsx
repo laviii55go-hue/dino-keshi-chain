@@ -1022,6 +1022,7 @@ export default function Board() {
               <Text style={[styles.rankingCell, styles.rankingName]}>名前</Text>
               <Text style={[styles.rankingCell, styles.rankingScore]}>スコア</Text>
               <Text style={[styles.rankingCell, styles.rankingLv]}>Lv</Text>
+              <Text style={[styles.rankingCell, styles.rankingDate]}>日付</Text>
             </View>
             <ScrollView style={{ maxHeight: 300 }}>
               {ranking.length === 0 ? (
@@ -1034,6 +1035,7 @@ export default function Board() {
                   <Text style={[styles.rankingCell, styles.rankingName]} numberOfLines={1}>{entry.name}</Text>
                   <Text style={[styles.rankingCell, styles.rankingScore]}>{entry.score.toLocaleString()}</Text>
                   <Text style={[styles.rankingCell, styles.rankingLv]}>{entry.level}</Text>
+                  <Text style={[styles.rankingCell, styles.rankingDate]}>{entry.date || ''}</Text>
                 </View>
               ))}
             </ScrollView>
@@ -1278,6 +1280,7 @@ const styles = StyleSheet.create({
   rankingName: { flex: 1 },
   rankingScore: { width: 70, textAlign: 'right', fontWeight: 'bold' },
   rankingLv: { width: 32, textAlign: 'right' },
+  rankingDate: { width: 52, textAlign: 'right', fontSize: 10, color: '#999' },
   rankingEmpty: { color: '#666', textAlign: 'center', paddingVertical: 20 },
   namePromptBox: { backgroundColor: '#1a1a3e', borderRadius: 16, padding: 24, borderWidth: 2, borderColor: '#FFD700', width: TOTAL_WIDTH - 16, maxWidth: 340, alignItems: 'center' },
   namePromptTitle: { color: '#FFD700', fontSize: 20, fontWeight: 'bold', marginBottom: 8 },
