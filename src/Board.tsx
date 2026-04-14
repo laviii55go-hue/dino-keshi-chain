@@ -53,6 +53,17 @@ import {
 } from './storage';
 import Cell from './Cell';
 import { DINO_IMAGES } from './dinoImages';
+import {
+  loadSoundEffects,
+  playTick,
+  playErase,
+  playBomb,
+  playBonus,
+  playSkillActivate,
+  playShuffle,
+  playLevelUp,
+  playGameOver,
+} from './sound';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const BOARD_PADDING = 8;
@@ -152,6 +163,7 @@ export default function Board() {
       if (name) setPlayerName(name);
       setSettings(sett);
       setIsLoaded(true);
+      loadSoundEffects();
     })();
   }, []);
 
@@ -169,6 +181,7 @@ export default function Board() {
   }, [board, score, moves, level, skillStock, phase, isLoaded, gameOver]);
 
   const triggerGameOver = useCallback(async () => {
+    playGameOver();
     setGameOver(true);
     await saveHighScore(scoreR.current);
     const hs = await loadHighScore();
@@ -253,6 +266,7 @@ export default function Board() {
     const newLevel = getLevel(newScore);
     if (newLevel > oldLevel) {
       const bonus = getLevelUpBonus(newLevel);
+      playLevelUp();
       setLevel(newLevel);
       setMoves(currentMoves + bonus);
       setLevelUpMsg(`Lv.${newLevel}! +${bonus}回`);
@@ -282,6 +296,8 @@ export default function Board() {
 
     setMatchedSet(matched);
     setPhase('glow');
+    if (newChain >= 2) playBonus();
+    playErase();
 
     setTimeout(() => {
       const scoreGain = calculateScore(matches, newChain);
@@ -345,6 +361,7 @@ export default function Board() {
 
     if (matches.length === 0) {
       // マッチなし → 入れ替えは確定（手数消費済み）
+      playShuffle();
       setBoard(swapped);
       if (newMoves <= 0 && skillStockR.current.length === 0) {
         setTimeout(() => triggerGameOverRef.current(), 200);
@@ -429,6 +446,7 @@ export default function Board() {
 
     if (isExplosion) {
       // 爆発演出: 時間差でバン！バン！と消える
+      playBomb();
       setExplodingSet(toRemove);
       setPhase('glow');
 
@@ -501,6 +519,7 @@ export default function Board() {
 
   // スキルカットシーンを表示してから実行
   const playSkillCutscene = useCallback((skillType: number, stockIndex: number, target?: [number, number]) => {
+    playSkillActivate();
     setSkillCutscene(skillType);
     setPhase('skill-cutscene');
     skillSlideX.setValue(-400);
@@ -692,6 +711,7 @@ export default function Board() {
             if (sel[0] === cell[0] && sel[1] === cell[1]) {
               setSelectedCell(null);
             } else {
+              playTick();
               setSwapTarget(cell);
               setTimeout(() => {
                 setSwapTarget(null);
@@ -703,6 +723,7 @@ export default function Board() {
               setSkillOnlyMsg(true);
               setTimeout(() => setSkillOnlyMsg(false), 1500);
             } else {
+              playTick();
               setSelectedCell(cell);
             }
           }

@@ -16,9 +16,11 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.harveststudio.dinokeshichain",
+      "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#1a5c2e"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
