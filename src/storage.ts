@@ -110,9 +110,10 @@ const SETTINGS_KEY = 'dino_chain_settings';
 
 export interface GameSettings {
   autoRegisterRanking: boolean; // true = 名前登録済みなら自動登録、false = 毎回確認
+  showTutorialTips: boolean;    // true = 盤面下にチュートリアルTip表示、false = 非表示
 }
 
-const DEFAULT_SETTINGS: GameSettings = { autoRegisterRanking: true };
+const DEFAULT_SETTINGS: GameSettings = { autoRegisterRanking: true, showTutorialTips: true };
 
 export async function loadSettings(): Promise<GameSettings> {
   try {

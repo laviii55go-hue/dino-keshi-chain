@@ -55,17 +55,60 @@ export function getLevelUpBonus(newLevel: number): number {
 }
 
 export interface DinoCell {
-  type: number; // 0-5
+  type: number; // 0-5 (通常恐竜) / -1 (岩ブロック)
   key: string;  // unique key for animation
+  hp?: number;  // 岩ブロック時のみ使用（残り耐久）
 }
 
 export const DINO_COLORS = ['#E53935', '#1E88E5', '#43A047', '#FDD835', '#8E24AA', '#FB8C00'];
 export const DINO_NAMES = ['ティラノ', 'ステゴ', 'プテラ', 'トリケラ', 'スピノ', 'パキケファロ'];
 export const DINO_EMOJI = ['🔴', '🔵', '🟢', '🟡', '🟣', '🟠'];
 
+// 岩ブロック（難易度スケーリング・Lv5/10/15/20... で出現）
+export const ROCK_TYPE = -1;
+export const ROCK_DESTROY_SCORE = 30;
+export const ROCK_SPAWN_COUNT_PER_MILESTONE = 3;
+
+// レベルに応じた新規スポーン岩のHP
+export function getRockHpByLevel(level: number): number {
+  if (level <= 10) return 1;
+  if (level <= 20) return 2;
+  return 3;
+}
+
+// 岩スポーン条件
+// - 序盤〜中盤（Lv3-14）: 3レベルごと（Lv3,6,9,12）
+// - 後半（Lv15以降）: 毎レベル（Lv15,16,17,18...）
+// レベルアップの要求スコアが大きくなる後半で、プレイの緊張感を維持するため毎Lv化
+export function shouldSpawnRocks(newLevel: number): boolean {
+  if (newLevel < 3) return false;
+  if (newLevel >= 15) return true;
+  return newLevel % 3 === 0;
+}
+
+// スキルが岩を破壊できるか
+// 草食全消し(0)・種類指定(1) は岩対象外、範囲攻撃系(2-5) は破壊可能
+export function skillBreaksRock(skillType: number): boolean {
+  return [2, 3, 4, 5].includes(skillType);
+}
+
 // スキルストック
 export const MAX_STOCK = 9;
-export const SKILL_TRIGGER_COUNT = 6; // 6個以上揃えでスキル獲得
+export const SKILL_TRIGGER_COUNT = 6; // 旧グローバル値（後方互換用・新ロジックは下記を使用）
+
+// スキル獲得に必要な最小マッチ個数（スキル種別ごと・2026/04/24 案B）
+export const SKILL_TRIGGER_COUNTS: Record<number, number> = {
+  0: 8, // ティラノ（最強・草食全消し）
+  1: 5, // ステゴ（中弱・種類全消し）
+  2: 6, // プテラ（中・ランダム10）
+  3: 5, // トリケラ（弱・横一列）
+  4: 6, // スピノ（中・周囲8マス）
+  5: 6, // パキケファロ（中〜強・縦一直線+着弾周囲）
+};
+
+export function getSkillTriggerCount(type: number): number {
+  return SKILL_TRIGGER_COUNTS[type] ?? SKILL_TRIGGER_COUNT;
+}
 
 export interface SkillStock {
   type: number; // 恐竜タイプ (0-5)
@@ -111,6 +154,33 @@ export function createCell(type?: number): DinoCell {
   return { type: type ?? createRandomType(), key: nextKey() };
 }
 
+// 岩セルを生成
+export function createRockCell(hp: number): DinoCell {
+  return { type: ROCK_TYPE, key: nextKey(), hp };
+}
+
+// 盤面にランダムに岩を配置（既存の岩は避ける）
+export function spawnRocks(board: DinoCell[][], count: number, hp: number): DinoCell[][] {
+  const newBoard = cloneBoard(board);
+  const candidates: [number, number][] = [];
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (newBoard[r][c].type !== ROCK_TYPE) candidates.push([r, c]);
+    }
+  }
+  // シャッフル
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+  const placeCount = Math.min(count, candidates.length);
+  for (let i = 0; i < placeCount; i++) {
+    const [r, c] = candidates[i];
+    newBoard[r][c] = createRockCell(hp);
+  }
+  return newBoard;
+}
+
 // 初期盤面を生成（マッチが一切ない状態を保証）
 export function createBoard(): DinoCell[][] {
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -144,6 +214,8 @@ function wouldMatch(
   c: number,
   type: number
 ): boolean {
+  // 岩セルは通常セルのマッチ生成に影響しない（初期盤面は岩なしなのでここには来ない想定）
+  if (type === ROCK_TYPE) return false;
   // Check horizontal (left 2)
   if (c >= 2 && currentRow[c - 1].type === type && currentRow[c - 2].type === type) {
     return true;
@@ -192,15 +264,17 @@ export interface Match {
 }
 
 export function findMatches(board: DinoCell[][]): Match[] {
-  // Step 1: 直線3つ以上をマーク
+  // Step 1: 直線3つ以上をマーク（岩セルは常にrun終端扱い）
   const lineMatched = new Set<string>();
 
   // 横方向
   for (let r = 0; r < ROWS; r++) {
     let start = 0;
     for (let c = 1; c <= COLS; c++) {
-      if (c < COLS && board[r][c].type === board[r][start].type) continue;
-      if (c - start >= 3) {
+      const startIsRock = board[r][start].type === ROCK_TYPE;
+      const sameType = c < COLS && board[r][c].type === board[r][start].type && !startIsRock;
+      if (sameType) continue;
+      if (!startIsRock && c - start >= 3) {
         for (let i = start; i < c; i++) {
           lineMatched.add(`${r},${i}`);
         }
@@ -213,8 +287,10 @@ export function findMatches(board: DinoCell[][]): Match[] {
   for (let c = 0; c < COLS; c++) {
     let start = 0;
     for (let r = 1; r <= ROWS; r++) {
-      if (r < ROWS && board[r][c].type === board[start][c].type) continue;
-      if (r - start >= 3) {
+      const startIsRock = board[start][c].type === ROCK_TYPE;
+      const sameType = r < ROWS && board[r][c].type === board[start][c].type && !startIsRock;
+      if (sameType) continue;
+      if (!startIsRock && r - start >= 3) {
         for (let i = start; i < r; i++) {
           lineMatched.add(`${i},${c}`);
         }
@@ -223,7 +299,7 @@ export function findMatches(board: DinoCell[][]): Match[] {
     }
   }
 
-  // Step 2: 隣接する同種セルのグループを全て見つける（flood-fill）
+  // Step 2: 隣接する同種セルのグループを全て見つける（flood-fill・岩は独立グループ扱い）
   const allVisited = new Set<string>();
   const clusterGroups: { cells: [number, number][]; type: number }[] = [];
 
@@ -251,6 +327,8 @@ export function findMatches(board: DinoCell[][]): Match[] {
         }
       }
 
+      // 岩グループはマッチ判定対象外
+      if (type === ROCK_TYPE) continue;
       clusterGroups.push({ cells: group, type });
     }
   }
@@ -313,7 +391,13 @@ export interface FillResult {
 }
 
 // マッチしたセルを消去し、落下＋補充を行う（落下距離も返す）
-export function removeAndFill(board: DinoCell[][], matches: Match[]): FillResult {
+// pendingRocks > 0 のとき、上から補充される新規セルのうちランダム N 個を岩に置換（自然な落下スポーン）
+export function removeAndFill(
+  board: DinoCell[][],
+  matches: Match[],
+  pendingRocks: number = 0,
+  rockHp: number = 1
+): FillResult {
   const newBoard = cloneBoard(board);
   const toRemove = new Set<string>();
   const fallDistances: number[][] = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
@@ -323,6 +407,9 @@ export function removeAndFill(board: DinoCell[][], matches: Match[]): FillResult
       toRemove.add(`${r},${c}`);
     }
   }
+
+  // 新規セル生成位置を記録（落下スポーン対象）
+  const newCellPositions: [number, number][] = [];
 
   // 各列ごとに処理：消去→落下→補充
   for (let c = 0; c < COLS; c++) {
@@ -343,13 +430,62 @@ export function removeAndFill(board: DinoCell[][], matches: Match[]): FillResult
         fallDistances[r][c] = r - remaining[idx].origRow; // how far it fell
       } else {
         newBoard[r][c] = createCell();
-        // new cells fall from above the board
         fallDistances[r][c] = removedCount;
+        newCellPositions.push([r, c]);
       }
     }
   }
 
+  // 岩スポーン: 新規セル位置からランダム N 個を岩に置換
+  if (pendingRocks > 0 && newCellPositions.length > 0) {
+    const shuffled = [...newCellPositions];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    const placeCount = Math.min(pendingRocks, shuffled.length);
+    for (let i = 0; i < placeCount; i++) {
+      const [r, c] = shuffled[i];
+      newBoard[r][c] = createRockCell(rockHp);
+    }
+  }
+
   return { board: newBoard, fallDistances };
+}
+
+// マッチ隣接の岩にダメージを与える
+// 戻り値: 更新後の盤面 / 破壊された岩の位置 / 得点ボーナス
+export function applyRockDamage(
+  board: DinoCell[][],
+  matchedCells: [number, number][]
+): { board: DinoCell[][]; destroyed: [number, number][]; score: number } {
+  const newBoard = cloneBoard(board);
+  const matchedSet = new Set(matchedCells.map(([r, c]) => `${r},${c}`));
+  const damagedPositions = new Set<string>();
+  const destroyed: [number, number][] = [];
+  let score = 0;
+
+  for (const [r, c] of matchedCells) {
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]] as const) {
+      const nr = r + dr;
+      const nc = c + dc;
+      if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+      const nkey = `${nr},${nc}`;
+      if (matchedSet.has(nkey)) continue;
+      if (damagedPositions.has(nkey)) continue;
+      const cell = newBoard[nr][nc];
+      if (cell.type !== ROCK_TYPE) continue;
+      damagedPositions.add(nkey);
+      const newHp = (cell.hp ?? 1) - 1;
+      if (newHp <= 0) {
+        destroyed.push([nr, nc]);
+        score += ROCK_DESTROY_SCORE;
+      } else {
+        newBoard[nr][nc] = { ...cell, hp: newHp };
+      }
+    }
+  }
+  return { board: newBoard, destroyed, score };
 }
 
 // マッチのスコアを計算（N個消し = N×10点 × 連鎖レベル）

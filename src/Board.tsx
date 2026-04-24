@@ -30,11 +30,19 @@ import {
   getNextLevelScore,
   getLevelUpBonus,
   MAX_STOCK,
-  SKILL_TRIGGER_COUNT,
+  getSkillTriggerCount,
   DINO_NAMES,
   HERBIVORES,
   SkillStock,
   createSkillStock,
+  ROCK_TYPE,
+  ROCK_DESTROY_SCORE,
+  ROCK_SPAWN_COUNT_PER_MILESTONE,
+  getRockHpByLevel,
+  shouldSpawnRocks,
+  skillBreaksRock,
+  spawnRocks,
+  applyRockDamage,
 } from './gameLogic';
 import {
   saveGameState,
@@ -64,8 +72,25 @@ import {
   playLevelUp,
   playGameOver,
 } from './sound';
+import { fetchGlobalRankings, submitGlobalScore, type GlobalRankEntry, type RankPeriod } from './firebase';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+// チュートリアルTips（盤面下で順次スクロール表示）
+const TUTORIAL_TIPS: { icon: string; text: string }[] = [
+  { icon: '🎯', text: '同じ恐竜を直線3つ、または隣接4つ以上で消せる！' },
+  { icon: '👆', text: 'タップ2回で入れ替え（距離制限なし・戦略的に配置）' },
+  { icon: '✋', text: 'スワイプでも隣接セルと入れ替えできる' },
+  { icon: '⚡', text: '大量消しでスキルGET！恐竜ごとに必要個数が違う' },
+  { icon: '🔥', text: '連鎖するとスコアが倍率アップ！連鎖数でボーナス増加' },
+  { icon: '🪨', text: '岩はマッチ隣接か範囲スキルで -1ダメージ・破壊で+30点' },
+  { icon: '👑', text: 'スキル発動で残数+1回！溜め込まず積極的に使おう' },
+  { icon: '🦕', text: 'ティラノ(8個)で草食恐竜を全消し・岩は対象外' },
+  { icon: '🦖', text: 'トリケラ(5個)で横一列を突進・手軽で強力' },
+  { icon: '🌟', text: 'Lv3・6・9…で岩出現・Lv15以降は毎レベル！' },
+];
+const TIP_INTERVAL_MS = 7000; // 1 tip の表示時間（静止時間）
+const TIP_SLIDE_MS = 800;     // スライドイン/アウトの時間（ゆっくりめ）
 const BOARD_PADDING = 8;
 const CELL_GAP = 3;
 const STOCK_WIDTH_RATIO = 0.13; // ストック列が画面幅の13%
@@ -114,11 +139,29 @@ export default function Board() {
   const [showNamePrompt, setShowNamePrompt] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const [showSettings, setShowSettings] = useState(false);
-  const [settings, setSettings] = useState<GameSettings>({ autoRegisterRanking: true });
+  const [settings, setSettings] = useState<GameSettings>({ autoRegisterRanking: true, showTutorialTips: true });
   const [pendingGameOver, setPendingGameOver] = useState(false);
   const [skillCutscene, setSkillCutscene] = useState<number | null>(null);
   const skillSlideX = useRef(new Animated.Value(-300)).current;
   const skillCutsceneOpacity = useRef(new Animated.Value(0)).current;
+  // パキケファロ頭突き演出（縦列落下スプライト）
+  const [pachyAttackCol, setPachyAttackCol] = useState<number | null>(null);
+  const pachyY = useRef(new Animated.Value(0)).current;
+  // グローバルランキング
+  const [globalRankings, setGlobalRankings] = useState<GlobalRankEntry[]>([]);
+  const [rankTab, setRankTab] = useState<'local' | RankPeriod>('daily');
+  const [globalLoading, setGlobalLoading] = useState(false);
+  // 連鎖スペクタクル演出（バッジ拡大＋画面フラッシュ）
+  const chainBadgeScale = useRef(new Animated.Value(1)).current;
+  const chainFlashOpacity = useRef(new Animated.Value(0)).current;
+  const chainHideTimeoutR = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 同時消し演出（1アクションで複数マッチグループが消えたときの別軸イベント）
+  const [simulMatchCount, setSimulMatchCount] = useState(0);
+  const simulBadgeScale = useRef(new Animated.Value(1)).current;
+  const simulHideTimeoutR = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // チュートリアルTipカード（盤面下で自動スクロール）
+  const [tipIdx, setTipIdx] = useState(0);
+  const tipX = useRef(new Animated.Value(SCREEN_WIDTH)).current;
 
   // Refs
   const boardRef = useRef<View>(null);
@@ -140,6 +183,65 @@ export default function Board() {
   useEffect(() => { gameOverR.current = gameOver; }, [gameOver]);
   useEffect(() => { activeSkillR.current = activeSkill; }, [activeSkill]);
   useEffect(() => { skillStockR.current = skillStock; }, [skillStock]);
+
+  // ランキングポップを開く共通ハンドラ（ローカル＋グローバル daily を同時ロード）
+  const openRankingModal = useCallback(async () => {
+    loadRanking().then(setRanking);
+    setShowRanking(true);
+    setRankTab('daily');
+    setGlobalLoading(true);
+    const data = await fetchGlobalRankings('daily');
+    setGlobalRankings(data);
+    setGlobalLoading(false);
+  }, []);
+
+  // チュートリアルTip: 右からスライドイン→静止→左へスライドアウト→次のTipへ
+  // settings.showTutorialTips が false なら動作停止
+  useEffect(() => {
+    if (!settings.showTutorialTips) return;
+    tipX.setValue(SCREEN_WIDTH);
+    const anim = Animated.sequence([
+      Animated.timing(tipX, { toValue: 0, duration: TIP_SLIDE_MS, useNativeDriver: true }),
+      Animated.delay(TIP_INTERVAL_MS),
+      Animated.timing(tipX, { toValue: -SCREEN_WIDTH, duration: TIP_SLIDE_MS, useNativeDriver: true }),
+    ]);
+    anim.start(({ finished }) => {
+      if (finished) setTipIdx((i) => (i + 1) % TUTORIAL_TIPS.length);
+    });
+    return () => anim.stop();
+  }, [tipIdx, tipX, settings.showTutorialTips]);
+
+  // 連鎖スペクタクル：lastChain 変動時にバッジ拡大＋画面フラッシュ＋音階段
+  useEffect(() => {
+    if (lastChain < 2) {
+      chainBadgeScale.setValue(1);
+      return;
+    }
+    // バッジ pop アニメ
+    chainBadgeScale.setValue(0.4);
+    Animated.sequence([
+      Animated.timing(chainBadgeScale, { toValue: 1.35, duration: 160, useNativeDriver: true }),
+      Animated.timing(chainBadgeScale, { toValue: 1.0, duration: 140, useNativeDriver: true }),
+    ]).start();
+
+    // 画面フラッシュ（3連鎖以上で強度アップ）
+    if (lastChain >= 3) {
+      const intensity = Math.min(0.15 + (lastChain - 3) * 0.1, 0.55);
+      chainFlashOpacity.setValue(0);
+      Animated.sequence([
+        Animated.timing(chainFlashOpacity, { toValue: intensity, duration: 70, useNativeDriver: true }),
+        Animated.timing(chainFlashOpacity, { toValue: 0, duration: 240, useNativeDriver: true }),
+      ]).start();
+    }
+
+    // 音階段
+    if (lastChain >= 5) {
+      playSkillActivate();
+      setTimeout(() => playBomb(), 60);
+    } else if (lastChain >= 4) {
+      playBomb();
+    }
+  }, [lastChain, chainBadgeScale, chainFlashOpacity]);
 
   // 起動時にセーブデータ＋ハイスコア＋ランキング＋名前＋設定を読み込み
   useEffect(() => {
@@ -192,7 +294,7 @@ export default function Board() {
     const currentName = await loadPlayerName();
 
     if (currentName && currentSettings.autoRegisterRanking) {
-      // 名前登録済み + 自動登録ON → 即ランキング登録
+      // 名前登録済み + 自動登録ON → 即ランキング登録（ローカル＋グローバル）
       const { ranking: newRanking } = await addRankingEntry({
         name: currentName,
         score: scoreR.current,
@@ -200,6 +302,8 @@ export default function Board() {
         date: new Date().toLocaleDateString('ja-JP'),
       });
       setRanking(newRanking);
+      // グローバルランキング送信（失敗しても進行継続）
+      submitGlobalScore(currentName, scoreR.current, levelR.current).catch(() => {});
     } else {
       // 名前未登録 or 毎回確認 → 名前入力ポップ表示
       setNameInput(currentName || '');
@@ -222,6 +326,8 @@ export default function Board() {
       date: new Date().toLocaleDateString('ja-JP'),
     });
     setRanking(newRanking);
+    // グローバルランキング送信
+    submitGlobalScore(name, scoreR.current, levelR.current).catch(() => {});
     setShowNamePrompt(false);
     setPendingGameOver(false);
   }, [nameInput]);
@@ -244,6 +350,7 @@ export default function Board() {
         date: new Date().toLocaleDateString('ja-JP'),
       });
       setRanking(newRanking);
+      submitGlobalScore(playerName, scoreR.current, levelR.current).catch(() => {});
     }
     setBoard(createBoard());
     setScore(0);
@@ -261,19 +368,27 @@ export default function Board() {
     clearGameState();
   }, [playerName]);
 
-  const checkLevelUp = useCallback((newScore: number, currentMoves: number) => {
+  // レベルアップ処理：手数ボーナス表示のみ（岩の実スポーンは removeAndFill 側で自然落下演出）
+  const checkLevelUp = useCallback((newScore: number, currentMoves: number): number => {
     const oldLevel = levelR.current;
     const newLevel = getLevel(newScore);
-    if (newLevel > oldLevel) {
-      const bonus = getLevelUpBonus(newLevel);
-      playLevelUp();
-      setLevel(newLevel);
-      setMoves(currentMoves + bonus);
-      setLevelUpMsg(`Lv.${newLevel}! +${bonus}回`);
-      setTimeout(() => setLevelUpMsg(null), 1500);
-      return bonus;
+    if (newLevel <= oldLevel) return 0;
+
+    const bonus = getLevelUpBonus(newLevel);
+    playLevelUp();
+    setLevel(newLevel);
+    setMoves(currentMoves + bonus);
+
+    // 3レベルごとに岩スポーン通知（実配置は removeAndFill に委譲）
+    let rockMsg = '';
+    if (shouldSpawnRocks(newLevel)) {
+      const hp = getRockHpByLevel(newLevel);
+      rockMsg = ` / 🪨×${ROCK_SPAWN_COUNT_PER_MILESTONE}(♥${hp})`;
     }
-    return 0;
+
+    setLevelUpMsg(`Lv.${newLevel}! +${bonus}回${rockMsg}`);
+    setTimeout(() => setLevelUpMsg(null), 1800);
+    return bonus;
   }, []);
 
   const runNextStep = useCallback((currentBoard: DinoCell[][], chainCount: number, accScore: number, currentMoves: number) => {
@@ -282,52 +397,110 @@ export default function Board() {
       setPhase('idle');
       setMatchedSet(new Set());
       setLastChain(chainCount);
+      // 連鎖バッジ自動消去：全連鎖一律800ms
+      if (chainHideTimeoutR.current) clearTimeout(chainHideTimeoutR.current);
+      if (chainCount >= 2) {
+        chainHideTimeoutR.current = setTimeout(() => {
+          setLastChain(0);
+          chainHideTimeoutR.current = null;
+        }, 800);
+      }
       if (currentMoves <= 0 && skillStockR.current.length === 0) {
         triggerGameOverRef.current();
       }
       return;
     }
+    // 連鎖中に次の消去が来たら自動消去タイマーをキャンセル
+    if (chainHideTimeoutR.current) {
+      clearTimeout(chainHideTimeoutR.current);
+      chainHideTimeoutR.current = null;
+    }
 
     const newChain = chainCount + 1;
-    const matched = new Set<string>();
+
+    // マッチセル一覧を集約
+    const allMatchedCells: [number, number][] = [];
     for (const m of matches) {
-      for (const [r, c] of m.cells) matched.add(`${r},${c}`);
+      for (const cell of m.cells) allMatchedCells.push(cell);
     }
+
+    // 隣接岩へのダメージ適用（HP減算 or 破壊）
+    const rockDmg = applyRockDamage(currentBoard, allMatchedCells);
+    const boardWithRockDmg = rockDmg.board;
+    const rockDestroyed = rockDmg.destroyed;
+    const rockScoreBonus = rockDmg.score;
+
+    // マッチ表示用：マッチセル＋破壊岩
+    const matched = new Set<string>();
+    for (const [r, c] of allMatchedCells) matched.add(`${r},${c}`);
+    for (const [r, c] of rockDestroyed) matched.add(`${r},${c}`);
 
     setMatchedSet(matched);
     setPhase('glow');
-    if (newChain >= 2) playBonus();
+    // 連鎖中にバッジを進行的に表示（2連鎖以降）
+    if (newChain >= 2) {
+      setLastChain(newChain);
+      playBonus();
+    }
+    // 同時消し（1ステップで複数の独立マッチグループが消えた場合）
+    if (matches.length >= 2) {
+      setSimulMatchCount(matches.length);
+      simulBadgeScale.setValue(0.4);
+      Animated.sequence([
+        Animated.timing(simulBadgeScale, { toValue: 1.3, duration: 140, useNativeDriver: true }),
+        Animated.timing(simulBadgeScale, { toValue: 1.0, duration: 130, useNativeDriver: true }),
+      ]).start();
+      if (simulHideTimeoutR.current) clearTimeout(simulHideTimeoutR.current);
+      simulHideTimeoutR.current = setTimeout(() => {
+        setSimulMatchCount(0);
+        simulHideTimeoutR.current = null;
+      }, 800);
+    }
     playErase();
 
     setTimeout(() => {
-      const scoreGain = calculateScore(matches, newChain);
+      const scoreGain = calculateScore(matches, newChain) + rockScoreBonus;
       const newScore = accScore + scoreGain;
       setScore(newScore);
 
-      // 5個以上マッチでスキル獲得
+      // スキル獲得判定（恐竜タイプごとに必要個数が異なる・案B採用）
       const newSkills: SkillStock[] = [];
       for (const m of matches) {
-        if (m.cells.length >= SKILL_TRIGGER_COUNT) {
-          const [mr, mc] = m.cells[0];
-          const dinoType = currentBoard[mr][mc].type;
+        const [mr, mc] = m.cells[0];
+        const dinoType = currentBoard[mr][mc].type;
+        if (dinoType === ROCK_TYPE) continue;
+        if (m.cells.length >= getSkillTriggerCount(dinoType)) {
           newSkills.push(createSkillStock(dinoType));
         }
       }
       if (newSkills.length > 0) {
         setSkillStock(prev => {
           const updated = [...prev, ...newSkills];
-          // 上限7個。溢れたら古いものから消す
           return updated.length > MAX_STOCK ? updated.slice(updated.length - MAX_STOCK) : updated;
         });
       }
 
-      const bonus = checkLevelUp(newScore, currentMoves);
-      const updatedMoves = currentMoves + bonus;
+      // 破壊岩をmatches形式に合流してremoveAndFillに渡す
+      const combinedMatches = rockDestroyed.length > 0
+        ? [...matches, { cells: rockDestroyed }]
+        : matches;
+
+      // マイルストーン到達を事前判定（落下スポーン用にremoveAndFillへ渡す）
+      const oldLevel = levelR.current;
+      const projectedLevel = getLevel(newScore);
+      const willSpawnRocks = projectedLevel > oldLevel && shouldSpawnRocks(projectedLevel);
+      const rockCount = willSpawnRocks ? ROCK_SPAWN_COUNT_PER_MILESTONE : 0;
+      const rockHp = willSpawnRocks ? getRockHpByLevel(projectedLevel) : 1;
 
       setPhase('remove');
 
       setTimeout(() => {
-        const { board: filled } = removeAndFill(currentBoard, matches);
+        const { board: filled } = removeAndFill(boardWithRockDmg, combinedMatches, rockCount, rockHp);
+
+        // レベルアップ表示＋手数ボーナス（岩は既にfilledに自然落下で含まれている）
+        const bonus = checkLevelUp(newScore, currentMoves);
+        const updatedMoves = currentMoves + bonus;
+
         setBoard(filled);
         setMatchedSet(new Set());
         setPhase('settle');
@@ -342,6 +515,23 @@ export default function Board() {
   const processSwap = useCallback((r1: number, c1: number, r2: number, c2: number) => {
     if (phaseR.current !== 'idle' || gameOverR.current) return;
     if (r1 === r2 && c1 === c2) return;
+    // 岩は入れ替え対象外
+    const curBoard = boardR.current;
+    if (curBoard[r1][c1].type === ROCK_TYPE || curBoard[r2][c2].type === ROCK_TYPE) {
+      setSelectedCell(null);
+      return;
+    }
+    // 新しい手 → 連鎖バッジ＋同時けしバッジを両方リセット＋タイマーもクリア
+    if (chainHideTimeoutR.current) {
+      clearTimeout(chainHideTimeoutR.current);
+      chainHideTimeoutR.current = null;
+    }
+    if (simulHideTimeoutR.current) {
+      clearTimeout(simulHideTimeoutR.current);
+      simulHideTimeoutR.current = null;
+    }
+    setLastChain(0);
+    setSimulMatchCount(0);
     // 手数0でスキルが残っている場合はメッセージ表示
     if (movesR.current <= 0) {
       setSkillOnlyMsg(true);
@@ -440,9 +630,131 @@ export default function Board() {
         break;
     }
 
-    if (toRemove.size === 0) return;
+    // スキルと岩の関係：
+    //  - 草食全消し(0)・種類指定(1) は岩対象外 → toRemove から岩を除外
+    //  - 範囲攻撃系(2-5) は岩に隣接マッチと同じく -1 ダメージ（即破壊ではない・HP>0なら残存）
+    if (!skillBreaksRock(skillType)) {
+      for (const key of [...toRemove]) {
+        const [r, c] = key.split(',').map(Number);
+        if (cur[r][c].type === ROCK_TYPE) toRemove.delete(key);
+      }
+    } else {
+      for (const key of [...toRemove]) {
+        const [r, c] = key.split(',').map(Number);
+        if (cur[r][c].type !== ROCK_TYPE) continue;
+        const cell = cur[r][c];
+        const newHp = (cell.hp ?? 1) - 1;
+        if (newHp <= 0) {
+          // HP0で破壊 → toRemove に残してそのまま除去
+        } else {
+          // ダメージのみ → HP更新して toRemove から除外（残存させる）
+          cur[r][c] = { ...cell, hp: newHp };
+          toRemove.delete(key);
+        }
+      }
+    }
+
+    if (toRemove.size === 0) {
+      // Q1A: スキル使用時は +1 手数（何も消えなくても付与）
+      setMoves(prev => prev + 1);
+      return;
+    }
+
+    // 岩と通常セルで得点分離（岩=30点 / 通常=10点）
+    const calcSkillScore = (): number => {
+      let dinoCount = 0;
+      let rockCount = 0;
+      for (const key of toRemove) {
+        const [r, c] = key.split(',').map(Number);
+        if (cur[r][c].type === ROCK_TYPE) rockCount++;
+        else dinoCount++;
+      }
+      return dinoCount * 10 + rockCount * ROCK_DESTROY_SCORE;
+    };
 
     const isExplosion = skillType === 2; // プテラは爆発演出
+    const isPachyCascade = skillType === 5 && !!target; // パキケファロは縦落下カスケード演出
+
+    if (isPachyCascade && target) {
+      // パキケファロ: 上から順に縦列をぼんぼんぼん消し → 最下段でどーん
+      const targetCol = target[1];
+      const cascadeDelay = 70; // ms per row
+      const impactHoldMs = 380;
+
+      // 列セル（上から） と 衝撃波セルを分離
+      const columnCells: [number, number][] = [];
+      for (let r = 0; r < ROWS; r++) columnCells.push([r, targetCol]);
+      const impactCells: [number, number][] = [];
+      const impactR = ROWS - 1;
+      const offsets: [number, number][] = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1]];
+      for (const [dr, dc] of offsets) {
+        const nr = impactR + dr, nc = targetCol + dc;
+        if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) impactCells.push([nr, nc]);
+      }
+
+      // パキケファロ落下スプライト起動
+      setPachyAttackCol(targetCol);
+      pachyY.setValue(0);
+      Animated.timing(pachyY, {
+        toValue: (ROWS - 1) * (CELL_SIZE + CELL_GAP),
+        duration: columnCells.length * cascadeDelay,
+        useNativeDriver: true,
+      }).start();
+
+      setPhase('glow');
+      const accumulated = new Set<string>();
+
+      // 縦列を上から順に点灯（ぼん×N）
+      for (let i = 0; i < columnCells.length; i++) {
+        setTimeout(() => {
+          const [r, c] = columnCells[i];
+          accumulated.add(`${r},${c}`);
+          setMatchedSet(new Set(accumulated));
+          playErase();
+        }, i * cascadeDelay);
+      }
+
+      const impactTime = columnCells.length * cascadeDelay;
+      // 最下段到達 → どーん（衝撃波）
+      setTimeout(() => {
+        playBomb();
+        for (const [r, c] of impactCells) accumulated.add(`${r},${c}`);
+        setMatchedSet(new Set(accumulated));
+        setExplodingSet(new Set(impactCells.map(([r, c]) => `${r},${c}`)));
+      }, impactTime);
+
+      // スコア加算＋残数+1＋実除去・fill・runNextStep
+      setTimeout(() => {
+        const scoreGain = calcSkillScore();
+        setScore(prev => prev + scoreGain);
+        setMoves(prev => prev + 1);
+        setPachyAttackCol(null);
+        setExplodingSet(new Set());
+        setPhase('remove');
+
+        setTimeout(() => {
+          for (let c = 0; c < COLS; c++) {
+            const remaining: DinoCell[] = [];
+            for (let r = ROWS - 1; r >= 0; r--) {
+              if (!toRemove.has(`${r},${c}`)) remaining.push(cur[r][c]);
+            }
+            for (let r = ROWS - 1; r >= 0; r--) {
+              const idx = ROWS - 1 - r;
+              cur[r][c] = idx < remaining.length ? remaining[idx] : createCell();
+            }
+          }
+          setBoard(cur);
+          setMatchedSet(new Set());
+          setPhase('settle');
+
+          setTimeout(() => {
+            runNextStep(cur, 0, scoreR.current, movesR.current);
+          }, SETTLE_MS);
+        }, REMOVE_MS);
+      }, impactTime + impactHoldMs);
+
+      return;
+    }
 
     if (isExplosion) {
       // 爆発演出: 時間差でバン！バン！と消える
@@ -451,8 +763,10 @@ export default function Board() {
       setPhase('glow');
 
       setTimeout(() => {
-        const scoreGain = toRemove.size * 10;
+        const scoreGain = calcSkillScore();
         setScore(prev => prev + scoreGain);
+        // Q1A: スキル発動 → 残数+1
+        setMoves(prev => prev + 1);
 
         setTimeout(() => {
           setExplodingSet(new Set());
@@ -480,8 +794,10 @@ export default function Board() {
       setPhase('glow');
 
       setTimeout(() => {
-        const scoreGain = toRemove.size * 10;
+        const scoreGain = calcSkillScore();
         setScore(prev => prev + scoreGain);
+        // Q1A: スキル発動 → 残数+1
+        setMoves(prev => prev + 1);
 
         setPhase('remove');
 
@@ -568,9 +884,10 @@ export default function Board() {
     const preview = new Set<string>();
     const cur = boardR.current;
     switch (skillType) {
-      case 1: // ステゴ: 同種全消し
+      case 1: // ステゴ: 同種全消し（岩は対象外）
         {
           const targetType = cur[r][c].type;
+          if (targetType === ROCK_TYPE) break;
           for (let rr = 0; rr < ROWS; rr++)
             for (let cc = 0; cc < COLS; cc++)
               if (cur[rr][cc].type === targetType) preview.add(`${rr},${cc}`);
@@ -611,6 +928,11 @@ export default function Board() {
   onSkillTargetSelectRef.current = (r: number, c: number) => {
     const skill = activeSkillR.current;
     if (!skill) return;
+    // ステゴ(種類全消し)は岩を対象にできない → プレビュー解除のみでスキル継続
+    if (skill.type === 1 && boardR.current[r][c].type === ROCK_TYPE) {
+      setSkillPreview(new Set());
+      return;
+    }
     setSkillPreview(new Set());
     setPhase('idle');
     playSkillCutscene(skill.type, skill.index, [r, c]);
@@ -746,6 +1068,80 @@ export default function Board() {
       style={styles.container}
       resizeMode="cover"
     >
+      {/* 連鎖フラッシュオーバーレイ（高連鎖時に画面全体を発光） */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.chainFlash,
+          {
+            opacity: chainFlashOpacity,
+            backgroundColor: lastChain >= 6 ? '#FFD700'
+              : lastChain >= 5 ? '#FF1744'
+              : lastChain >= 4 ? '#FF6D00'
+              : '#FFEB3B',
+          },
+        ]}
+      />
+      {/* 同時けしバッジ（連鎖バッジより上・画面25%位置） */}
+      {simulMatchCount >= 2 && (() => {
+        const s = simulMatchCount >= 5
+          ? { bg: '#FFD54F', fontSize: 34, suffix: '!!!💫🌟', border: '#FFD700', color: '#8D6E00' }
+          : simulMatchCount >= 4
+          ? { bg: '#AB47BC', fontSize: 30, suffix: '!!!🌟', border: '#E1BEE7', color: '#fff' }
+          : simulMatchCount >= 3
+          ? { bg: '#1E88E5', fontSize: 26, suffix: '!!', border: 'transparent', color: '#fff' }
+          : { bg: '#26C6DA', fontSize: 22, suffix: '!', border: 'transparent', color: '#fff' };
+        return (
+          <View pointerEvents="none" style={styles.simulBadgeWrapper}>
+            <Animated.View
+              style={[
+                styles.chainBadgeCenter,
+                {
+                  backgroundColor: s.bg,
+                  borderWidth: s.border !== 'transparent' ? 3 : 0,
+                  borderColor: s.border,
+                  transform: [{ scale: simulBadgeScale }],
+                },
+              ]}
+            >
+              <Text style={[styles.chainTextCenter, { fontSize: s.fontSize, color: s.color }]}>
+                {simulMatchCount}同時けし{s.suffix}
+              </Text>
+            </Animated.View>
+          </View>
+        );
+      })()}
+      {/* 連鎖バッジ（画面中央・絶対配置） */}
+      {lastChain > 1 && (() => {
+        const s = lastChain >= 6
+          ? { bg: '#B71C1C', fontSize: 42, suffix: '!!!💥🔥🔥', border: '#FFD700' }
+          : lastChain >= 5
+          ? { bg: '#D81B60', fontSize: 38, suffix: '!!!🔥🔥', border: '#FFE082' }
+          : lastChain >= 4
+          ? { bg: '#E53935', fontSize: 34, suffix: '!!!🔥', border: '#FFCC80' }
+          : lastChain >= 3
+          ? { bg: '#FF6D00', fontSize: 30, suffix: '!!', border: 'transparent' }
+          : { bg: '#FFC107', fontSize: 26, suffix: '!', border: 'transparent' };
+        return (
+          <View pointerEvents="none" style={styles.chainBadgeWrapper}>
+            <Animated.View
+              style={[
+                styles.chainBadgeCenter,
+                {
+                  backgroundColor: s.bg,
+                  borderWidth: s.border !== 'transparent' ? 3 : 0,
+                  borderColor: s.border,
+                  transform: [{ scale: chainBadgeScale }],
+                },
+              ]}
+            >
+              <Text style={[styles.chainTextCenter, { fontSize: s.fontSize }]}>
+                {lastChain}連鎖{s.suffix}
+              </Text>
+            </Animated.View>
+          </View>
+        );
+      })()}
       {/* Header */}
       <View style={styles.headerBar}>
         <View style={styles.headerItem}>
@@ -777,7 +1173,7 @@ export default function Board() {
           <TouchableOpacity style={styles.badgeIconBtn} onPress={() => setShowSettings(true)}>
             <Text style={styles.badgeLinkText}>設定</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.badgeIconBtn} onPress={() => { loadRanking().then(setRanking); setShowRanking(true); }}>
+          <TouchableOpacity style={styles.badgeIconBtn} onPress={openRankingModal}>
             <Text style={styles.badgeIconText}>👑</Text>
           </TouchableOpacity>
         </View>
@@ -789,10 +1185,6 @@ export default function Board() {
           ) : levelUpMsg ? (
             <View style={styles.levelUpBadge}>
               <Text style={styles.levelUpText}>{levelUpMsg}</Text>
-            </View>
-          ) : lastChain > 1 ? (
-            <View style={styles.chainBadge}>
-              <Text style={styles.chainText}>{lastChain}連鎖!</Text>
             </View>
           ) : null}
         </View>
@@ -866,13 +1258,48 @@ export default function Board() {
                   isExploding={explodingSet.has(key)}
                   animateIn={phase === 'settle'}
                   cellKey={cell.key}
+                  rockHp={cell.hp}
                 />
               );
             })}
           </View>
         ))}
+        {/* パキケファロ頭突きスプライト（落下中のみ表示） */}
+        {pachyAttackCol !== null && (
+          <Animated.View
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              left: pachyAttackCol * (CELL_SIZE + CELL_GAP) + CELL_GAP,
+              top: CELL_GAP,
+              width: CELL_SIZE,
+              height: CELL_SIZE,
+              transform: [{ translateY: pachyY }],
+              zIndex: 10,
+            }}
+          >
+            <Image
+              source={DINO_IMAGES[5]}
+              style={{ width: CELL_SIZE, height: CELL_SIZE }}
+              resizeMode="contain"
+            />
+          </Animated.View>
+        )}
       </View>
       </View>
+
+      {/* チュートリアルTipカード（盤面下でスクロール・設定で表示ON/OFF） */}
+      {settings.showTutorialTips && (
+        <Animated.View
+          pointerEvents="none"
+          style={[styles.tipCard, { transform: [{ translateX: tipX }] }]}
+        >
+          <Text style={styles.tipIcon}>{TUTORIAL_TIPS[tipIdx].icon}</Text>
+          <Text style={styles.tipText} numberOfLines={2}>
+            {TUTORIAL_TIPS[tipIdx].text}
+          </Text>
+        </Animated.View>
+      )}
 
       {/* Restart + Skill Help */}
 
@@ -934,7 +1361,16 @@ export default function Board() {
                 <Text style={styles.howToHeading}>手数</Text>
                 <Text style={styles.howToText}>入れ替えるたびに1回消費（消えなくても消費）</Text>
                 <Text style={styles.howToText}>レベルアップで手数が回復</Text>
+                <Text style={styles.howToText}>スキル発動で残数+1回（スキルを積極的に使うほど得）</Text>
                 <Text style={styles.howToText}>手数0でスキルが残っていれば続行可能</Text>
+              </View>
+              <View style={styles.howToSection}>
+                <Text style={styles.howToHeading}>岩ブロック 🪨</Text>
+                <Text style={styles.howToText}>Lv3,6,9,12で落下スポーン（+3個ずつ）</Text>
+                <Text style={styles.howToText}>Lv15以降は毎レベル+3個（後半難化）</Text>
+                <Text style={styles.howToText}>入れ替え不可・マッチしない邪魔者</Text>
+                <Text style={styles.howToText}>隣接マッチ＆範囲スキルでHP-1・破壊で+30点</Text>
+                <Text style={styles.howToText}>Lv1-10: ♥1 / Lv11-20: ♥2 / Lv21+: ♥3</Text>
               </View>
               <View style={styles.howToSection}>
                 <Text style={styles.howToHeading}>連鎖</Text>
@@ -943,7 +1379,7 @@ export default function Board() {
               </View>
               <View style={styles.howToSection}>
                 <Text style={styles.howToHeading}>スキル</Text>
-                <Text style={styles.howToText}>6個以上同時に消すとスキルGET</Text>
+                <Text style={styles.howToText}>恐竜ごとの必要個数を同時に消すとスキルGET（5〜8個）</Text>
                 <Text style={styles.howToText}>左のストック欄に恐竜が追加されます</Text>
                 <Text style={styles.howToText}>タップで発動。恐竜ごとに効果が違います</Text>
               </View>
@@ -960,48 +1396,48 @@ export default function Board() {
         <View style={styles.overlay}>
           <View style={styles.skillHelpBox}>
             <Text style={styles.skillHelpTitle}>スキル説明</Text>
-            <Text style={styles.skillHelpSub}>6個以上揃えるとスキルGET!</Text>
+            <Text style={styles.skillHelpSub}>必要個数は恐竜ごとに違います／発動で残数+1回</Text>
             <View style={styles.skillHelpList}>
               <View style={styles.skillHelpRow}>
                 <Image source={DINO_IMAGES[0]} style={styles.skillHelpIcon} resizeMode="contain" />
                 <View style={styles.skillHelpTextArea}>
-                  <Text style={styles.skillHelpName}>ティラノ</Text>
-                  <Text style={styles.skillHelpDesc}>草食恐竜を全消し</Text>
+                  <Text style={styles.skillHelpName}>ティラノ（8個）</Text>
+                  <Text style={styles.skillHelpDesc}>草食恐竜を全消し（岩は対象外）</Text>
                 </View>
               </View>
               <View style={styles.skillHelpRow}>
                 <Image source={DINO_IMAGES[1]} style={styles.skillHelpIcon} resizeMode="contain" />
                 <View style={styles.skillHelpTextArea}>
-                  <Text style={styles.skillHelpName}>ステゴ</Text>
-                  <Text style={styles.skillHelpDesc}>指定した種類を全消し</Text>
+                  <Text style={styles.skillHelpName}>ステゴ（5個）</Text>
+                  <Text style={styles.skillHelpDesc}>指定した種類を全消し（岩は対象外）</Text>
                 </View>
               </View>
               <View style={styles.skillHelpRow}>
                 <Image source={DINO_IMAGES[2]} style={styles.skillHelpIcon} resizeMode="contain" />
                 <View style={styles.skillHelpTextArea}>
-                  <Text style={styles.skillHelpName}>プテラ</Text>
-                  <Text style={styles.skillHelpDesc}>ランダム10個を爆破</Text>
+                  <Text style={styles.skillHelpName}>プテラ（6個）</Text>
+                  <Text style={styles.skillHelpDesc}>ランダム10個を爆破（岩に-1ダメージ）</Text>
                 </View>
               </View>
               <View style={styles.skillHelpRow}>
                 <Image source={DINO_IMAGES[3]} style={styles.skillHelpIcon} resizeMode="contain" />
                 <View style={styles.skillHelpTextArea}>
-                  <Text style={styles.skillHelpName}>トリケラ</Text>
-                  <Text style={styles.skillHelpDesc}>横一列を突進消し</Text>
+                  <Text style={styles.skillHelpName}>トリケラ（5個）</Text>
+                  <Text style={styles.skillHelpDesc}>横一列を突進消し（岩に-1ダメージ）</Text>
                 </View>
               </View>
               <View style={styles.skillHelpRow}>
                 <Image source={DINO_IMAGES[4]} style={styles.skillHelpIcon} resizeMode="contain" />
                 <View style={styles.skillHelpTextArea}>
-                  <Text style={styles.skillHelpName}>スピノ</Text>
-                  <Text style={styles.skillHelpDesc}>周囲8マスを水撃</Text>
+                  <Text style={styles.skillHelpName}>スピノ（6個）</Text>
+                  <Text style={styles.skillHelpDesc}>周囲8マスを水撃（岩に-1ダメージ）</Text>
                 </View>
               </View>
               <View style={styles.skillHelpRow}>
                 <Image source={DINO_IMAGES[5]} style={styles.skillHelpIcon} resizeMode="contain" />
                 <View style={styles.skillHelpTextArea}>
-                  <Text style={styles.skillHelpName}>パキケファロ</Text>
-                  <Text style={styles.skillHelpDesc}>縦一直線+着弾で衝撃波</Text>
+                  <Text style={styles.skillHelpName}>パキケファロ（6個）</Text>
+                  <Text style={styles.skillHelpDesc}>縦一直線+着弾で衝撃波（岩に-1ダメージ）</Text>
                 </View>
               </View>
             </View>
@@ -1016,30 +1452,68 @@ export default function Board() {
       {showRanking && (
         <View style={styles.overlay}>
           <View style={styles.rankingBox}>
-            <Text style={styles.rankingTitle}>ランキング TOP10</Text>
+            <Text style={styles.rankingTitle}>
+              {rankTab === 'local' ? 'マイ記録 TOP10'
+                : rankTab === 'daily' ? '今日のTOP10'
+                : rankTab === 'weekly' ? '今週のTOP10'
+                : '今月のTOP10'}
+            </Text>
+            {/* タブ切り替え */}
+            <View style={styles.rankTabs}>
+              {(['daily', 'weekly', 'monthly', 'local'] as const).map((tab) => (
+                <TouchableOpacity
+                  key={tab}
+                  style={[styles.rankTab, rankTab === tab && styles.rankTabActive]}
+                  onPress={async () => {
+                    setRankTab(tab);
+                    if (tab !== 'local') {
+                      setGlobalLoading(true);
+                      const data = await fetchGlobalRankings(tab);
+                      setGlobalRankings(data);
+                      setGlobalLoading(false);
+                    }
+                  }}
+                >
+                  <Text style={[styles.rankTabText, rankTab === tab && styles.rankTabTextActive]}>
+                    {tab === 'daily' ? '今日' : tab === 'weekly' ? '今週' : tab === 'monthly' ? '今月' : 'マイ記録'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
             <View style={styles.rankingHeader}>
               <Text style={[styles.rankingCell, styles.rankingRank]}>#</Text>
               <Text style={[styles.rankingCell, styles.rankingName]}>名前</Text>
               <Text style={[styles.rankingCell, styles.rankingScore]}>スコア</Text>
               <Text style={[styles.rankingCell, styles.rankingLv]}>Lv</Text>
-              <Text style={[styles.rankingCell, styles.rankingDate]}>日付</Text>
             </View>
             <ScrollView style={{ maxHeight: 300 }}>
-              {ranking.length === 0 ? (
-                <Text style={styles.rankingEmpty}>まだ記録がありません</Text>
-              ) : ranking.map((entry, i) => (
+              {rankTab === 'local' ? (
+                ranking.length === 0 ? (
+                  <Text style={styles.rankingEmpty}>まだ記録がありません</Text>
+                ) : ranking.map((entry, i) => (
+                  <View key={i} style={[styles.rankingRow, i === 0 && styles.rankingRow1st]}>
+                    <Text style={[styles.rankingCell, styles.rankingRank, i < 3 && styles.rankingTopRank]}>{i + 1}</Text>
+                    <Text style={[styles.rankingCell, styles.rankingName]} numberOfLines={1}>{entry.name}</Text>
+                    <Text style={[styles.rankingCell, styles.rankingScore]}>{entry.score.toLocaleString()}</Text>
+                    <Text style={[styles.rankingCell, styles.rankingLv]}>{entry.level}</Text>
+                  </View>
+                ))
+              ) : globalLoading ? (
+                <Text style={styles.rankingEmpty}>読み込み中…</Text>
+              ) : globalRankings.length === 0 ? (
+                <Text style={styles.rankingEmpty}>
+                  {rankTab === 'daily' ? '今日' : rankTab === 'weekly' ? '今週' : '今月'}の記録はまだありません
+                </Text>
+              ) : globalRankings.slice(0, 10).map((entry, i) => (
                 <View key={i} style={[styles.rankingRow, i === 0 && styles.rankingRow1st]}>
-                  <Text style={[styles.rankingCell, styles.rankingRank, i < 3 && styles.rankingTopRank]}>
-                    {i + 1}
-                  </Text>
+                  <Text style={[styles.rankingCell, styles.rankingRank, i < 3 && styles.rankingTopRank]}>{i + 1}</Text>
                   <Text style={[styles.rankingCell, styles.rankingName]} numberOfLines={1}>{entry.name}</Text>
                   <Text style={[styles.rankingCell, styles.rankingScore]}>{entry.score.toLocaleString()}</Text>
                   <Text style={[styles.rankingCell, styles.rankingLv]}>{entry.level}</Text>
-                  <Text style={[styles.rankingCell, styles.rankingDate]}>{entry.date || ''}</Text>
                 </View>
               ))}
             </ScrollView>
-            <TouchableOpacity style={styles.skillHelpClose} onPress={() => setShowRanking(false)}>
+            <TouchableOpacity style={styles.skillHelpClose} onPress={() => { setShowRanking(false); setGlobalRankings([]); }}>
               <Text style={styles.skillHelpCloseText}>とじる</Text>
             </TouchableOpacity>
           </View>
@@ -1050,8 +1524,9 @@ export default function Board() {
       {showNamePrompt && (
         <View style={styles.overlay}>
           <View style={styles.namePromptBox}>
-            <Text style={styles.namePromptTitle}>スコア登録</Text>
+            <Text style={styles.namePromptTitle}>🏆 スコア登録</Text>
             <Text style={styles.namePromptScore}>{score.toLocaleString()}点 / Lv.{level}</Text>
+            <Text style={styles.namePromptHint}>ランキングに名前を残そう！</Text>
             <View style={styles.nameInputRow}>
               <Text style={styles.nameLabel}>名前:</Text>
               <TextInput
@@ -1062,16 +1537,18 @@ export default function Board() {
                 placeholder="名前を入力"
                 placeholderTextColor="#666"
                 autoFocus
+                returnKeyType="done"
+                onSubmitEditing={handleNameRegister}
               />
             </View>
-            <View style={styles.gameOverButtons}>
-              <TouchableOpacity style={styles.gameOverButton} onPress={handleNameRegister}>
-                <Text style={styles.gameOverButtonText}>登録する</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.gameOverButton, styles.rankingButton]} onPress={handleNameSkip}>
-                <Text style={styles.gameOverButtonText}>登録しない</Text>
-              </TouchableOpacity>
-            </View>
+            {/* プライマリボタン：ランキング登録（大・目立つ） */}
+            <TouchableOpacity style={styles.primaryRegBtn} onPress={handleNameRegister}>
+              <Text style={styles.primaryRegBtnText}>👑 ランキング登録</Text>
+            </TouchableOpacity>
+            {/* セカンダリリンク：登録しない（小・地味） */}
+            <TouchableOpacity style={styles.skipLinkBtn} onPress={handleNameSkip}>
+              <Text style={styles.skipLinkBtnText}>登録せずに閉じる</Text>
+            </TouchableOpacity>
           </View>
         </View>
       )}
@@ -1094,6 +1571,17 @@ export default function Board() {
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.settingsRow}
+              onPress={async () => {
+                const newSettings = { ...settings, showTutorialTips: !settings.showTutorialTips };
+                setSettings(newSettings);
+                await saveSettings(newSettings);
+              }}
+            >
+              <Text style={styles.settingsLabel}>チュートリアル表示</Text>
+              <Text style={styles.settingsValue}>{settings.showTutorialTips ? 'ON（盤面下にTipを流す）' : 'OFF（非表示）'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.settingsRow}
               onPress={() => { setShowSettings(false); setShowHowToPlay(true); }}
             >
               <Text style={styles.settingsLabel}>消し方説明</Text>
@@ -1104,7 +1592,7 @@ export default function Board() {
               onPress={() => { setShowSettings(false); setShowSkillHelp(true); }}
             >
               <Text style={styles.settingsLabel}>スキル説明</Text>
-              <Text style={styles.settingsValue}>6個以上揃えでスキルGET</Text>
+              <Text style={styles.settingsValue}>恐竜ごとの必要個数を揃えでGET</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.settingsRow, styles.retireRow]}
@@ -1157,7 +1645,7 @@ export default function Board() {
               <TouchableOpacity style={styles.gameOverButton} onPress={handleRestart}>
                 <Text style={styles.gameOverButtonText}>もう一回</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.gameOverButton, styles.rankingButton]} onPress={() => { loadRanking().then(setRanking); setShowRanking(true); }}>
+              <TouchableOpacity style={[styles.gameOverButton, styles.rankingButton]} onPress={openRankingModal}>
                 <Text style={styles.gameOverButtonText}>👑 ランキング</Text>
               </TouchableOpacity>
             </View>
@@ -1239,23 +1727,55 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 1, height: 1 },
     textShadowRadius: 2,
   },
-  badgeRow: { flexDirection: 'row', alignItems: 'center', width: TOTAL_WIDTH, height: 32, marginBottom: 4 },
-  badgeIcons: { flexDirection: 'row', alignItems: 'center', gap: 6, width: 80 },
-  badgeIconBtn: { backgroundColor: 'rgba(15,52,96,0.8)', width: 50, height: 28, borderRadius: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)', alignItems: 'center' as const, justifyContent: 'center' as const },
-  badgeIconText: { fontSize: 14, textAlign: 'center' as const },
-  badgeLinkText: { color: '#fff', fontSize: 11, fontWeight: 'bold', textAlign: 'center' as const },
+  rankTabs: { flexDirection: 'row', gap: 4, marginBottom: 8, justifyContent: 'center' },
+  rankTab: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, backgroundColor: 'rgba(255,255,255,0.1)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  rankTabActive: { backgroundColor: 'rgba(255,215,0,0.25)', borderColor: '#FFD700' },
+  rankTabText: { color: '#ccc', fontSize: 12, fontWeight: '600' },
+  rankTabTextActive: { color: '#FFD700', fontWeight: 'bold' },
+  badgeRow: { flexDirection: 'row', alignItems: 'center', width: TOTAL_WIDTH, height: 46, marginBottom: 4 },
+  badgeIcons: { flexDirection: 'row', alignItems: 'center', gap: 8, width: 120 },
+  badgeIconBtn: { backgroundColor: 'rgba(15,52,96,0.85)', width: 56, height: 42, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)', alignItems: 'center' as const, justifyContent: 'center' as const },
+  badgeIconText: { fontSize: 22, textAlign: 'center' as const },
+  badgeLinkText: { color: '#fff', fontSize: 14, fontWeight: 'bold', textAlign: 'center' as const },
   badgeCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   skillOnlyBadge: { backgroundColor: '#FF5252', paddingHorizontal: 16, paddingVertical: 4, borderRadius: 12 },
   skillOnlyText: { color: '#fff', fontSize: 13, fontWeight: 'bold' },
-  chainBadge: { backgroundColor: '#FF6D00', paddingHorizontal: 12, paddingVertical: 3, borderRadius: 12 },
-  chainText: { color: '#fff', fontSize: 14, fontWeight: 'bold' },
+  chainBadge: { paddingHorizontal: 14, paddingVertical: 5, borderRadius: 14, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.4, shadowRadius: 3, elevation: 4 },
+  chainText: { color: '#fff', fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 2 },
+  chainFlash: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99 },
+  chainBadgeWrapper: { position: 'absolute', top: '40%', left: 0, right: 0, alignItems: 'center', zIndex: 100 },
+  simulBadgeWrapper: { position: 'absolute', top: '25%', left: 0, right: 0, alignItems: 'center', zIndex: 101 },
+  tipCard: {
+    // 盤面の真下に配置（gameArea 直後の flex 子）
+    marginTop: 10,
+    width: TOTAL_WIDTH,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(15,52,96,0.88)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,215,0,0.45)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 4,
+    overflow: 'hidden',
+  },
+  tipIcon: { fontSize: 22 },
+  tipText: { color: '#fff', fontSize: 13, flex: 1, lineHeight: 17 },
+  chainBadgeCenter: { paddingHorizontal: 28, paddingVertical: 14, borderRadius: 22, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.6, shadowRadius: 6, elevation: 10 },
+  chainTextCenter: { color: '#fff', fontWeight: 'bold', textAlign: 'center', textShadowColor: 'rgba(0,0,0,0.7)', textShadowOffset: { width: 2, height: 2 }, textShadowRadius: 4 },
   levelUpBadge: { backgroundColor: '#FFD700', paddingHorizontal: 16, paddingVertical: 6, borderRadius: 12 },
   levelUpText: { color: '#1a1a2e', fontSize: 16, fontWeight: 'bold' },
   board: { backgroundColor: 'rgba(22,33,62,0.85)', borderRadius: 12, padding: CELL_GAP, flexDirection: 'column' },
   row: { flexDirection: 'row', gap: CELL_GAP, marginBottom: CELL_GAP },
   stockWrapper: { alignItems: 'center' },
   stockLabel: { color: '#FFD700', fontSize: 11, fontWeight: 'bold', marginBottom: 4, textShadowColor: '#000', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 2 },
-  overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.7)', alignItems: 'center', justifyContent: 'center' },
+  overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.7)', alignItems: 'center', justifyContent: 'center', zIndex: 200, elevation: 20 },
   gameOverBox: { backgroundColor: '#1a1a2e', borderRadius: 16, padding: 32, alignItems: 'center', borderWidth: 2, borderColor: '#e94560' },
   gameOverTitle: { color: '#e94560', fontSize: 28, fontWeight: 'bold', marginBottom: 8 },
   gameOverLevel: { color: '#FFD700', fontSize: 20, fontWeight: 'bold', marginBottom: 8 },
@@ -1283,8 +1803,13 @@ const styles = StyleSheet.create({
   rankingDate: { width: 52, textAlign: 'right', fontSize: 10, color: '#999' },
   rankingEmpty: { color: '#666', textAlign: 'center', paddingVertical: 20 },
   namePromptBox: { backgroundColor: '#1a1a3e', borderRadius: 16, padding: 24, borderWidth: 2, borderColor: '#FFD700', width: TOTAL_WIDTH - 16, maxWidth: 340, alignItems: 'center' },
-  namePromptTitle: { color: '#FFD700', fontSize: 20, fontWeight: 'bold', marginBottom: 8 },
-  namePromptScore: { color: '#fff', fontSize: 18, marginBottom: 16 },
+  namePromptTitle: { color: '#FFD700', fontSize: 22, fontWeight: 'bold', marginBottom: 8 },
+  namePromptScore: { color: '#fff', fontSize: 20, fontWeight: 'bold', marginBottom: 4 },
+  namePromptHint: { color: '#ccc', fontSize: 13, marginBottom: 14 },
+  primaryRegBtn: { backgroundColor: '#e94560', paddingHorizontal: 24, paddingVertical: 14, borderRadius: 10, borderWidth: 2, borderColor: '#FFD700', alignSelf: 'stretch', alignItems: 'center', marginTop: 4, marginBottom: 10, shadowColor: '#FFD700', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 4 },
+  primaryRegBtnText: { color: '#fff', fontSize: 18, fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.4)', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 2 },
+  skipLinkBtn: { paddingHorizontal: 12, paddingVertical: 8, marginTop: 2 },
+  skipLinkBtnText: { color: '#888', fontSize: 12, textDecorationLine: 'underline' },
   registeredName: { color: '#aaa', fontSize: 13, marginBottom: 12 },
   settingsBox: { backgroundColor: '#1a1a3e', borderRadius: 16, padding: 24, borderWidth: 2, borderColor: '#FFD700', width: TOTAL_WIDTH - 16, maxWidth: 340 },
   settingsRow: { backgroundColor: 'rgba(15,52,96,0.6)', borderRadius: 8, padding: 12, marginBottom: 12 },

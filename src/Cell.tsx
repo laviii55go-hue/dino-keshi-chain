@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Image, StyleSheet, Animated } from 'react-native';
+import { View, Text, Image, StyleSheet, Animated } from 'react-native';
 import { DINO_IMAGES } from './dinoImages';
+import { ROCK_TYPE } from './gameLogic';
 
 interface CellProps {
   type: number;
@@ -13,9 +14,10 @@ interface CellProps {
   isExploding?: boolean;
   animateIn?: boolean;
   cellKey?: string;
+  rockHp?: number;
 }
 
-export default function Cell({ type, size, isSelected, isSwapTarget = false, isSkillPreview = false, isMatched, isRemoving, isExploding = false, animateIn = false, cellKey }: CellProps) {
+export default function Cell({ type, size, isSelected, isSwapTarget = false, isSkillPreview = false, isMatched, isRemoving, isExploding = false, animateIn = false, cellKey, rockHp }: CellProps) {
   const scale = useRef(new Animated.Value(1)).current;
   const opacity = useRef(new Animated.Value(1)).current;
   const prevCellKey = useRef(cellKey);
@@ -48,6 +50,8 @@ export default function Cell({ type, size, isSelected, isSwapTarget = false, isS
     prevExploding.current = isExploding;
   }, [cellKey, animateIn, isExploding]);
 
+  const isRock = type === ROCK_TYPE;
+
   return (
     <Animated.View
       style={[
@@ -57,7 +61,7 @@ export default function Cell({ type, size, isSelected, isSwapTarget = false, isS
           height: size,
           borderWidth: (isSelected || isSwapTarget || isSkillPreview) ? 3 : 0,
           borderColor: isSkillPreview ? '#FF5252' : isSwapTarget ? '#FF5252' : isSelected ? '#4FC3F7' : 'transparent',
-          backgroundColor: isRemoving ? 'transparent' : isSkillPreview ? 'rgba(255,82,82,0.3)' : '#2a2a4e',
+          backgroundColor: isRemoving ? 'transparent' : isSkillPreview ? 'rgba(255,82,82,0.3)' : isRock ? '#555' : '#2a2a4e',
           transform: [{ scale }],
           opacity,
         },
@@ -65,11 +69,22 @@ export default function Cell({ type, size, isSelected, isSwapTarget = false, isS
     >
       {!isRemoving && (
         <>
-          <Image
-            source={DINO_IMAGES[type]}
-            style={{ width: size - 8, height: size - 8 }}
-            resizeMode="contain"
-          />
+          {isRock ? (
+            <View style={styles.rockInner}>
+              <Text style={[styles.rockEmoji, { fontSize: size * 0.55 }]}>🪨</Text>
+              {typeof rockHp === 'number' && (
+                <View style={styles.rockHpBadge}>
+                  <Text style={styles.rockHpText}>{'♥'.repeat(Math.max(1, rockHp))}</Text>
+                </View>
+              )}
+            </View>
+          ) : (
+            <Image
+              source={DINO_IMAGES[type]}
+              style={{ width: size - 8, height: size - 8 }}
+              resizeMode="contain"
+            />
+          )}
           {isMatched && <View style={styles.glow} />}
         </>
       )}
@@ -88,5 +103,27 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(255,255,200,0.5)',
     borderRadius: 8,
+  },
+  rockInner: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rockEmoji: {
+    textAlign: 'center',
+  },
+  rockHpBadge: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 6,
+  },
+  rockHpText: {
+    color: '#FF6B6B',
+    fontSize: 10,
+    fontWeight: 'bold',
   },
 });
