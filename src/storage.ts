@@ -111,9 +111,10 @@ const SETTINGS_KEY = 'dino_chain_settings';
 export interface GameSettings {
   autoRegisterRanking: boolean; // true = 名前登録済みなら自動登録、false = 毎回確認
   showTutorialTips: boolean;    // true = 盤面下にチュートリアルTip表示、false = 非表示
+  alwaysConfirmSkill: boolean;  // true = 初心者モード（スキル発動前に毎回確認）、false = 恐竜ごとにインストール後初回のみ確認
 }
 
-const DEFAULT_SETTINGS: GameSettings = { autoRegisterRanking: true, showTutorialTips: true };
+const DEFAULT_SETTINGS: GameSettings = { autoRegisterRanking: true, showTutorialTips: true, alwaysConfirmSkill: false };
 
 export async function loadSettings(): Promise<GameSettings> {
   try {
@@ -130,6 +131,37 @@ export async function saveSettings(settings: GameSettings): Promise<void> {
     await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   } catch (e) {
     console.warn('[Storage] save settings failed:', e);
+  }
+}
+
+// --- スキル学習フラグ（恐竜タイプごと独立・インストール後初回タップで確認POPUPを出すための判定） ---
+
+const SKILL_LEARNED_KEY_PREFIX = 'dino_chain_skill_learned_';
+const DINO_TYPE_COUNT = 6; // 0..5
+
+export async function loadSkillLearned(type: number): Promise<boolean> {
+  try {
+    const val = await AsyncStorage.getItem(`${SKILL_LEARNED_KEY_PREFIX}${type}`);
+    return val === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export async function saveSkillLearned(type: number): Promise<void> {
+  try {
+    await AsyncStorage.setItem(`${SKILL_LEARNED_KEY_PREFIX}${type}`, 'true');
+  } catch (e) {
+    console.warn('[Storage] save skill learned failed:', e);
+  }
+}
+
+export async function resetAllSkillLearned(): Promise<void> {
+  try {
+    const keys = Array.from({ length: DINO_TYPE_COUNT }, (_, i) => `${SKILL_LEARNED_KEY_PREFIX}${i}`);
+    await AsyncStorage.multiRemove(keys);
+  } catch (e) {
+    console.warn('[Storage] reset all skill learned failed:', e);
   }
 }
 

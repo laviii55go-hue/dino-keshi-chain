@@ -56,11 +56,15 @@ import {
   savePlayerName,
   loadSettings,
   saveSettings,
+  loadSkillLearned,
+  saveSkillLearned,
+  resetAllSkillLearned,
   GameSettings,
   RankingEntry,
 } from './storage';
 import Cell from './Cell';
 import { DINO_IMAGES } from './dinoImages';
+import SkillConfirmModal from './SkillConfirmModal';
 import {
   loadSoundEffects,
   playTick,
@@ -76,18 +80,14 @@ import { fetchGlobalRankings, submitGlobalScore, type GlobalRankEntry, type Rank
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
-// チュートリアルTips（盤面下で順次スクロール表示）
+// チュートリアルTips（盤面下で順次スクロール表示）— 2026/04/25 改修: 基本ルール6件に絞り込み（スキル個別効果は確認POPUPへ移動）
 const TUTORIAL_TIPS: { icon: string; text: string }[] = [
-  { icon: '🎯', text: '同じ恐竜を直線3つ、または隣接4つ以上で消せる！' },
-  { icon: '👆', text: 'タップ2回で入れ替え（距離制限なし・戦略的に配置）' },
-  { icon: '✋', text: 'スワイプでも隣接セルと入れ替えできる' },
-  { icon: '⚡', text: '大量消しでスキルGET！恐竜ごとに必要個数が違う' },
-  { icon: '🔥', text: '連鎖するとスコアが倍率アップ！連鎖数でボーナス増加' },
-  { icon: '🪨', text: '岩はマッチ隣接か範囲スキルで -1ダメージ・破壊で+30点' },
-  { icon: '👑', text: 'スキル発動で残数+1回！溜め込まず積極的に使おう' },
-  { icon: '🦕', text: 'ティラノ(8個)で草食恐竜を全消し・岩は対象外' },
-  { icon: '🦖', text: 'トリケラ(5個)で横一列を突進・手軽で強力' },
-  { icon: '🌟', text: 'Lv3・6・9…で岩出現・Lv15以降は毎レベル！' },
+  { icon: '👆', text: '2つをタップで入れ替え。離れていてもOK' },
+  { icon: '✨', text: '3つ以上並べると消える（直線3つ or 隣接4つ以上）' },
+  { icon: '🔗', text: '落ちてきた恐竜で再び揃うと連鎖！2連鎖×2倍・3連鎖×3倍' },
+  { icon: '❤️', text: '入れ替えるたびに手数-1／レベルアップで回復' },
+  { icon: '🪨', text: '岩は入れ替え不可・隣接マッチや範囲攻撃でHP-1' },
+  { icon: '🦖', text: '左のストックに恐竜が並んだらタップで発動！' },
 ];
 const TIP_INTERVAL_MS = 7000; // 1 tip の表示時間（静止時間）
 const TIP_SLIDE_MS = 800;     // スライドイン/アウトの時間（ゆっくりめ）
@@ -139,7 +139,9 @@ export default function Board() {
   const [showNamePrompt, setShowNamePrompt] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const [showSettings, setShowSettings] = useState(false);
-  const [settings, setSettings] = useState<GameSettings>({ autoRegisterRanking: true, showTutorialTips: true });
+  const [settings, setSettings] = useState<GameSettings>({ autoRegisterRanking: true, showTutorialTips: true, alwaysConfirmSkill: false });
+  // スキル確認POPUP用: 慶さんの合意で「恐竜ごとインストール後初回のみ」表示・alwaysConfirmSkill=ONで常時表示
+  const [pendingSkill, setPendingSkill] = useState<{ type: number; index: number } | null>(null);
   const [pendingGameOver, setPendingGameOver] = useState(false);
   const [skillCutscene, setSkillCutscene] = useState<number | null>(null);
   const skillSlideX = useRef(new Animated.Value(-300)).current;
@@ -862,22 +864,53 @@ export default function Board() {
     });
   }, [executeSkill]);
 
-  // ストックタップ → スキル種類に応じて即発動 or ターゲット選択モードへ
-  const onSkillTap = useCallback((stockIndex: number) => {
-    if (phaseR.current !== 'idle' || gameOverR.current) return;
-    const skill = skillStock[stockIndex];
-    if (!skill) return;
-
-    const needsTarget = [1, 3, 4, 5].includes(skill.type); // ステゴ, トリケラ, スピノ, パキケファロ
+  // スキル発動のディスパッチ（即発動 or ターゲット選択モード）
+  const executeSkillDispatch = useCallback((skillType: number, stockIndex: number) => {
+    const needsTarget = [1, 3, 4, 5].includes(skillType); // ステゴ, トリケラ, スピノ, パキケファロ
     if (needsTarget) {
-      setActiveSkill({ type: skill.type, index: stockIndex });
+      setActiveSkill({ type: skillType, index: stockIndex });
       setPhase('skill-target');
       setSelectedCell(null);
     } else {
       // ティラノ, プテラ → 即発動
-      playSkillCutscene(skill.type, stockIndex);
+      playSkillCutscene(skillType, stockIndex);
     }
-  }, [skillStock, playSkillCutscene]);
+  }, [playSkillCutscene]);
+
+  // ストックタップ → 確認POPUP要否を判定して分岐
+  // 慶さん合意（2026/04/25）: 恐竜ごとに「インストール後の初回タップ」のみ確認POPUPを出す
+  // 設定 alwaysConfirmSkill=ON の場合は常時POPUP（初心者モード）
+  const onSkillTap = useCallback(async (stockIndex: number) => {
+    if (phaseR.current !== 'idle' || gameOverR.current) return;
+    const skill = skillStock[stockIndex];
+    if (!skill) return;
+
+    const alwaysConfirm = settings.alwaysConfirmSkill;
+    const learned = await loadSkillLearned(skill.type);
+
+    if (alwaysConfirm || !learned) {
+      // 確認POPUP表示
+      setPendingSkill({ type: skill.type, index: stockIndex });
+      return;
+    }
+
+    // 学習済み＆初心者モードOFF → 従来通り即発動 or 選択モード
+    executeSkillDispatch(skill.type, stockIndex);
+  }, [skillStock, settings.alwaysConfirmSkill, executeSkillDispatch]);
+
+  // 確認POPUPで「発動する」押下
+  const onConfirmSkill = useCallback(async () => {
+    if (!pendingSkill) return;
+    const { type, index } = pendingSkill;
+    await saveSkillLearned(type);
+    setPendingSkill(null);
+    executeSkillDispatch(type, index);
+  }, [pendingSkill, executeSkillDispatch]);
+
+  // 確認POPUPで「キャンセル」押下
+  const onCancelSkill = useCallback(() => {
+    setPendingSkill(null);
+  }, []);
 
   // スキルの影響範囲を計算してプレビュー表示
   const calcSkillPreview = useCallback((skillType: number, r: number, c: number): Set<string> => {
@@ -1303,20 +1336,51 @@ export default function Board() {
 
       {/* Restart + Skill Help */}
 
-      {/* Skill target mode hint */}
+      {/* Skill target mode banner — 2026/04/25 B-1 改修: 盤面上部に大きなバナー overlay */}
       {phase === 'skill-target' && activeSkill && (
-        <View style={styles.skillHint}>
-          <Text style={styles.skillHintText}>
-            {activeSkill.type === 1 ? '消したい恐竜をタップ' :
-             activeSkill.type === 3 ? '消したい行をタップ' :
-             activeSkill.type === 5 ? '頭突きする列をタップ' :
-             'ターゲットをタップ'}
-          </Text>
-          <TouchableOpacity onPress={() => { setActiveSkill(null); setPhase('idle'); }}>
-            <Text style={styles.skillCancelText}>キャンセル</Text>
-          </TouchableOpacity>
+        <View style={styles.skillBannerOverlay} pointerEvents="box-none">
+          <View style={styles.skillBanner}>
+            <Image
+              source={DINO_IMAGES[activeSkill.type]}
+              style={styles.skillBannerIcon}
+              resizeMode="contain"
+            />
+            <View style={styles.skillBannerTextArea}>
+              <Text style={styles.skillBannerTitle}>
+                {DINO_NAMES[activeSkill.type]} — {
+                  activeSkill.type === 1 ? '同種全消し' :
+                  activeSkill.type === 3 ? '横一列 突進' :
+                  activeSkill.type === 4 ? '周囲8マス 水撃' :
+                  activeSkill.type === 5 ? '縦一直線 頭突き' :
+                  'スキル発動中'
+                }
+              </Text>
+              <Text style={styles.skillBannerHint}>
+                {activeSkill.type === 1 ? '消したい恐竜をタップ' :
+                 activeSkill.type === 3 ? '消したい行をタップ' :
+                 activeSkill.type === 4 ? '中心となるマスをタップ' :
+                 activeSkill.type === 5 ? '頭突きする列をタップ' :
+                 'ターゲットをタップ'}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.skillBannerCancelBtn}
+              onPress={() => { setActiveSkill(null); setPhase('idle'); setSkillPreview(new Set()); }}
+            >
+              <Text style={styles.skillBannerCancelText}>キャンセル</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
+
+      {/* Skill Confirm Modal — 2026/04/25 A-1+D-3: 恐竜ごとインストール後初回のみ確認POPUP */}
+      <SkillConfirmModal
+        skillType={pendingSkill ? pendingSkill.type : null}
+        visible={pendingSkill !== null}
+        onConfirm={onConfirmSkill}
+        onCancel={onCancelSkill}
+      />
+
 
       {/* Skill Cutscene Overlay */}
       {skillCutscene !== null && (
@@ -1582,6 +1646,26 @@ export default function Board() {
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.settingsRow}
+              onPress={async () => {
+                const newSettings = { ...settings, alwaysConfirmSkill: !settings.alwaysConfirmSkill };
+                setSettings(newSettings);
+                await saveSettings(newSettings);
+              }}
+            >
+              <Text style={styles.settingsLabel}>初心者モード（スキル発動前に確認）</Text>
+              <Text style={styles.settingsValue}>{settings.alwaysConfirmSkill ? 'ON（毎回確認）' : 'OFF（恐竜ごとに初回のみ）'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.settingsRow}
+              onPress={async () => {
+                await resetAllSkillLearned();
+              }}
+            >
+              <Text style={styles.settingsLabel}>スキル学習をリセット</Text>
+              <Text style={styles.settingsValue}>タップで全恐竜の初回POPUPを再表示</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.settingsRow}
               onPress={() => { setShowSettings(false); setShowHowToPlay(true); }}
             >
               <Text style={styles.settingsLabel}>消し方説明</Text>
@@ -1826,6 +1910,59 @@ const styles = StyleSheet.create({
   skillHint: { flexDirection: 'row', alignItems: 'center', gap: 16, marginTop: 8 },
   skillHintText: { color: '#FFD700', fontSize: 14, fontWeight: 'bold' },
   skillCancelText: { color: '#FF5252', fontSize: 14, fontWeight: 'bold' },
+  // 2026/04/25 B-1 改修: スキルターゲット選択時の盤面上部バナー
+  skillBannerOverlay: {
+    position: 'absolute',
+    top: 70,
+    left: 8,
+    right: 8,
+    alignItems: 'center',
+    zIndex: 180,
+    elevation: 18,
+  },
+  skillBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(26,26,46,0.95)',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderWidth: 2,
+    borderColor: '#FFD700',
+    width: '100%',
+    gap: 10,
+  },
+  skillBannerIcon: {
+    width: 48,
+    height: 48,
+  },
+  skillBannerTextArea: {
+    flex: 1,
+  },
+  skillBannerTitle: {
+    color: '#FFD700',
+    fontSize: 14,
+    fontWeight: 'bold',
+    marginBottom: 2,
+  },
+  skillBannerHint: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  skillBannerCancelBtn: {
+    backgroundColor: 'rgba(255,82,82,0.2)',
+    borderWidth: 1,
+    borderColor: '#FF5252',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  skillBannerCancelText: {
+    color: '#FF5252',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
   skillCutsceneBox: {
     flexDirection: 'row',
     alignItems: 'center',
