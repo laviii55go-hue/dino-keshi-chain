@@ -112,9 +112,10 @@ export interface GameSettings {
   autoRegisterRanking: boolean; // true = 名前登録済みなら自動登録、false = 毎回確認
   showTutorialTips: boolean;    // true = 盤面下にチュートリアルTip表示、false = 非表示
   alwaysConfirmSkill: boolean;  // true = 初心者モード（スキル発動前に毎回確認）、false = 恐竜ごとにインストール後初回のみ確認
+  soundEnabled: boolean;        // true = 効果音ON、false = ミュート
 }
 
-const DEFAULT_SETTINGS: GameSettings = { autoRegisterRanking: true, showTutorialTips: true, alwaysConfirmSkill: false };
+const DEFAULT_SETTINGS: GameSettings = { autoRegisterRanking: true, showTutorialTips: true, alwaysConfirmSkill: false, soundEnabled: true };
 
 export async function loadSettings(): Promise<GameSettings> {
   try {

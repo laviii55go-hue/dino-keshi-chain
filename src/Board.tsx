@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Dimensions,
   PanResponder,
+  Switch,
   TouchableOpacity,
   TextInput,
   ScrollView,
@@ -75,6 +76,7 @@ import {
   playShuffle,
   playLevelUp,
   playGameOver,
+  setSoundVolume,
 } from './sound';
 import { fetchGlobalRankings, submitGlobalScore, type GlobalRankEntry, type RankPeriod } from './firebase';
 
@@ -139,7 +141,9 @@ export default function Board() {
   const [showNamePrompt, setShowNamePrompt] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const [showSettings, setShowSettings] = useState(false);
-  const [settings, setSettings] = useState<GameSettings>({ autoRegisterRanking: true, showTutorialTips: true, alwaysConfirmSkill: false });
+  const [showNameEdit, setShowNameEdit] = useState(false);
+  const [showChangelog, setShowChangelog] = useState(false);
+  const [settings, setSettings] = useState<GameSettings>({ autoRegisterRanking: true, showTutorialTips: true, alwaysConfirmSkill: false, soundEnabled: true });
   // スキル確認POPUP用: 慶さんの合意で「恐竜ごとインストール後初回のみ」表示・alwaysConfirmSkill=ONで常時表示
   const [pendingSkill, setPendingSkill] = useState<{ type: number; index: number } | null>(null);
   const [pendingGameOver, setPendingGameOver] = useState(false);
@@ -266,6 +270,7 @@ export default function Board() {
       setRanking(rk);
       if (name) setPlayerName(name);
       setSettings(sett);
+      setSoundVolume(sett.soundEnabled ? 0.3 : 0);
       setIsLoaded(true);
       loadSoundEffects();
     })();
@@ -1448,9 +1453,14 @@ export default function Board() {
                 <Text style={styles.howToText}>タップで発動。恐竜ごとに効果が違います</Text>
               </View>
             </ScrollView>
-            <TouchableOpacity style={styles.skillHelpClose} onPress={() => setShowHowToPlay(false)}>
-              <Text style={styles.skillHelpCloseText}>とじる</Text>
-            </TouchableOpacity>
+            <View style={styles.modalButtonRow}>
+              <TouchableOpacity style={styles.modalBackBtn} onPress={() => { setShowHowToPlay(false); setShowSettings(true); }}>
+                <Text style={styles.modalBackBtnText}>← 設定に戻る</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setShowHowToPlay(false)}>
+                <Text style={styles.skillHelpCloseText}>とじる</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       )}
@@ -1505,9 +1515,14 @@ export default function Board() {
                 </View>
               </View>
             </View>
-            <TouchableOpacity style={styles.skillHelpClose} onPress={() => setShowSkillHelp(false)}>
-              <Text style={styles.skillHelpCloseText}>とじる</Text>
-            </TouchableOpacity>
+            <View style={styles.modalButtonRow}>
+              <TouchableOpacity style={styles.modalBackBtn} onPress={() => { setShowSkillHelp(false); setShowSettings(true); }}>
+                <Text style={styles.modalBackBtnText}>← 設定に戻る</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setShowSkillHelp(false)}>
+                <Text style={styles.skillHelpCloseText}>とじる</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       )}
@@ -1622,72 +1637,260 @@ export default function Board() {
         <View style={styles.overlay}>
           <View style={styles.settingsBox}>
             <Text style={styles.rankingTitle}>設定</Text>
-            <TouchableOpacity
-              style={styles.settingsRow}
-              onPress={async () => {
-                const newSettings = { ...settings, autoRegisterRanking: !settings.autoRegisterRanking };
-                setSettings(newSettings);
-                await saveSettings(newSettings);
-              }}
-            >
-              <Text style={styles.settingsLabel}>ランキング自動登録</Text>
-              <Text style={styles.settingsValue}>{settings.autoRegisterRanking ? 'ON（名前登録済みなら確認なし）' : 'OFF（毎回確認）'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.settingsRow}
-              onPress={async () => {
-                const newSettings = { ...settings, showTutorialTips: !settings.showTutorialTips };
-                setSettings(newSettings);
-                await saveSettings(newSettings);
-              }}
-            >
-              <Text style={styles.settingsLabel}>チュートリアル表示</Text>
-              <Text style={styles.settingsValue}>{settings.showTutorialTips ? 'ON（盤面下にTipを流す）' : 'OFF（非表示）'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.settingsRow}
-              onPress={async () => {
-                const newSettings = { ...settings, alwaysConfirmSkill: !settings.alwaysConfirmSkill };
-                setSettings(newSettings);
-                await saveSettings(newSettings);
-              }}
-            >
-              <Text style={styles.settingsLabel}>初心者モード（スキル発動前に確認）</Text>
-              <Text style={styles.settingsValue}>{settings.alwaysConfirmSkill ? 'ON（毎回確認）' : 'OFF（恐竜ごとに初回のみ）'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.settingsRow}
-              onPress={async () => {
-                await resetAllSkillLearned();
-              }}
-            >
-              <Text style={styles.settingsLabel}>スキル学習をリセット</Text>
-              <Text style={styles.settingsValue}>タップで全恐竜の初回POPUPを再表示</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.settingsRow}
-              onPress={() => { setShowSettings(false); setShowHowToPlay(true); }}
-            >
-              <Text style={styles.settingsLabel}>消し方説明</Text>
-              <Text style={styles.settingsValue}>ルール・操作方法を確認</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.settingsRow}
-              onPress={() => { setShowSettings(false); setShowSkillHelp(true); }}
-            >
-              <Text style={styles.settingsLabel}>スキル説明</Text>
-              <Text style={styles.settingsValue}>恐竜ごとの必要個数を揃えでGET</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.settingsRow, styles.retireRow]}
-              onPress={() => { setShowSettings(false); setShowRetireConfirm(true); }}
-            >
-              <Text style={styles.retireLabel}>リタイヤ</Text>
-              <Text style={styles.retireDesc}>現在のゲームを終了して最初からやり直す</Text>
-            </TouchableOpacity>
+            <ScrollView style={styles.settingsScroll} contentContainerStyle={styles.settingsScrollContent}>
+
+              {/* プロフィール */}
+              <Text style={styles.settingsSectionHeader}>プロフィール</Text>
+              <TouchableOpacity
+                style={styles.settingsActionRow}
+                onPress={() => { setNameInput(playerName); setShowNameEdit(true); }}
+              >
+                <View style={styles.settingsActionLabelArea}>
+                  <Text style={styles.settingsActionIcon}>👤</Text>
+                  <View style={styles.settingsActionTextArea}>
+                    <Text style={styles.settingsLabel}>プレイヤー名</Text>
+                    <Text style={styles.settingsActionDesc}>{playerName ? playerName : '未登録（タップで設定）'}</Text>
+                  </View>
+                </View>
+                <Text style={styles.settingsChevron}>›</Text>
+              </TouchableOpacity>
+
+              {/* プレイ設定 */}
+              <Text style={styles.settingsSectionHeader}>プレイ設定</Text>
+              <View style={styles.settingsSwitchRow}>
+                <View style={styles.settingsActionLabelArea}>
+                  <Text style={styles.settingsActionIcon}>🔊</Text>
+                  <View style={styles.settingsActionTextArea}>
+                    <Text style={styles.settingsLabel}>効果音</Text>
+                    <Text style={styles.settingsActionDesc}>消去音・連鎖音・スキル音</Text>
+                  </View>
+                </View>
+                <Switch
+                  value={settings.soundEnabled}
+                  onValueChange={async (val) => {
+                    const newSettings = { ...settings, soundEnabled: val };
+                    setSettings(newSettings);
+                    await saveSettings(newSettings);
+                    setSoundVolume(val ? 0.3 : 0);
+                  }}
+                  trackColor={{ false: '#444', true: '#FFD700' }}
+                  thumbColor={settings.soundEnabled ? '#fff' : '#888'}
+                />
+              </View>
+              <View style={styles.settingsSwitchRow}>
+                <View style={styles.settingsActionLabelArea}>
+                  <Text style={styles.settingsActionIcon}>🎓</Text>
+                  <View style={styles.settingsActionTextArea}>
+                    <Text style={styles.settingsLabel}>初心者モード</Text>
+                    <Text style={styles.settingsActionDesc}>スキル発動前に毎回確認</Text>
+                  </View>
+                </View>
+                <Switch
+                  value={settings.alwaysConfirmSkill}
+                  onValueChange={async (val) => {
+                    const newSettings = { ...settings, alwaysConfirmSkill: val };
+                    setSettings(newSettings);
+                    await saveSettings(newSettings);
+                  }}
+                  trackColor={{ false: '#444', true: '#FFD700' }}
+                  thumbColor={settings.alwaysConfirmSkill ? '#fff' : '#888'}
+                />
+              </View>
+
+              {/* 表示 */}
+              <Text style={styles.settingsSectionHeader}>表示</Text>
+              <View style={styles.settingsSwitchRow}>
+                <View style={styles.settingsActionLabelArea}>
+                  <Text style={styles.settingsActionIcon}>💡</Text>
+                  <View style={styles.settingsActionTextArea}>
+                    <Text style={styles.settingsLabel}>チュートリアル</Text>
+                    <Text style={styles.settingsActionDesc}>盤面下にTipを流す</Text>
+                  </View>
+                </View>
+                <Switch
+                  value={settings.showTutorialTips}
+                  onValueChange={async (val) => {
+                    const newSettings = { ...settings, showTutorialTips: val };
+                    setSettings(newSettings);
+                    await saveSettings(newSettings);
+                  }}
+                  trackColor={{ false: '#444', true: '#FFD700' }}
+                  thumbColor={settings.showTutorialTips ? '#fff' : '#888'}
+                />
+              </View>
+              <View style={styles.settingsSwitchRow}>
+                <View style={styles.settingsActionLabelArea}>
+                  <Text style={styles.settingsActionIcon}>🏆</Text>
+                  <View style={styles.settingsActionTextArea}>
+                    <Text style={styles.settingsLabel}>ランキング自動登録</Text>
+                    <Text style={styles.settingsActionDesc}>登録済みなら確認なし</Text>
+                  </View>
+                </View>
+                <Switch
+                  value={settings.autoRegisterRanking}
+                  onValueChange={async (val) => {
+                    const newSettings = { ...settings, autoRegisterRanking: val };
+                    setSettings(newSettings);
+                    await saveSettings(newSettings);
+                  }}
+                  trackColor={{ false: '#444', true: '#FFD700' }}
+                  thumbColor={settings.autoRegisterRanking ? '#fff' : '#888'}
+                />
+              </View>
+
+              {/* ヘルプ */}
+              <Text style={styles.settingsSectionHeader}>ヘルプ</Text>
+              <TouchableOpacity
+                style={styles.settingsActionRow}
+                onPress={() => { setShowSettings(false); setShowHowToPlay(true); }}
+              >
+                <View style={styles.settingsActionLabelArea}>
+                  <Text style={styles.settingsActionIcon}>📖</Text>
+                  <View style={styles.settingsActionTextArea}>
+                    <Text style={styles.settingsLabel}>消し方説明</Text>
+                    <Text style={styles.settingsActionDesc}>ルール・操作方法</Text>
+                  </View>
+                </View>
+                <Text style={styles.settingsChevron}>›</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.settingsActionRow}
+                onPress={() => { setShowSettings(false); setShowSkillHelp(true); }}
+              >
+                <View style={styles.settingsActionLabelArea}>
+                  <Text style={styles.settingsActionIcon}>🦕</Text>
+                  <View style={styles.settingsActionTextArea}>
+                    <Text style={styles.settingsLabel}>スキル説明</Text>
+                    <Text style={styles.settingsActionDesc}>恐竜ごとの必要個数</Text>
+                  </View>
+                </View>
+                <Text style={styles.settingsChevron}>›</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.settingsActionRow}
+                onPress={() => { setShowSettings(false); setShowChangelog(true); }}
+              >
+                <View style={styles.settingsActionLabelArea}>
+                  <Text style={styles.settingsActionIcon}>📋</Text>
+                  <View style={styles.settingsActionTextArea}>
+                    <Text style={styles.settingsLabel}>更新履歴</Text>
+                    <Text style={styles.settingsActionDesc}>バージョン履歴を確認</Text>
+                  </View>
+                </View>
+                <Text style={styles.settingsChevron}>›</Text>
+              </TouchableOpacity>
+
+              {/* 危険操作 */}
+              <Text style={[styles.settingsSectionHeader, styles.settingsSectionHeaderDanger]}>危険操作</Text>
+              <TouchableOpacity
+                style={[styles.settingsActionRow, styles.retireRow]}
+                onPress={() => { setShowSettings(false); setShowRetireConfirm(true); }}
+              >
+                <View style={styles.settingsActionLabelArea}>
+                  <Text style={styles.settingsActionIcon}>⚠️</Text>
+                  <View style={styles.settingsActionTextArea}>
+                    <Text style={styles.retireLabel}>リタイヤ</Text>
+                    <Text style={styles.retireDesc}>ゲームを終了して最初から</Text>
+                  </View>
+                </View>
+                <Text style={[styles.settingsChevron, { color: '#FF5252' }]}>›</Text>
+              </TouchableOpacity>
+
+            </ScrollView>
             <TouchableOpacity style={styles.skillHelpClose} onPress={() => setShowSettings(false)}>
               <Text style={styles.skillHelpCloseText}>とじる</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Name Edit Modal（設定画面から呼出） */}
+      {showNameEdit && (
+        <View style={styles.overlay}>
+          <View style={styles.namePromptBox}>
+            <Text style={styles.namePromptTitle}>👤 プレイヤー名</Text>
+            <Text style={styles.namePromptHint}>{playerName ? '名前を変更します' : '名前を登録します'}</Text>
+            <View style={styles.nameInputRow}>
+              <Text style={styles.nameLabel}>名前:</Text>
+              <TextInput
+                style={styles.nameInput}
+                value={nameInput}
+                onChangeText={setNameInput}
+                maxLength={10}
+                placeholder="名前を入力"
+                placeholderTextColor="#666"
+                autoFocus
+                returnKeyType="done"
+                onSubmitEditing={async () => {
+                  const trimmed = nameInput.trim();
+                  if (trimmed.length === 0) { setShowNameEdit(false); return; }
+                  setPlayerName(trimmed);
+                  await savePlayerName(trimmed);
+                  setShowNameEdit(false);
+                }}
+              />
+            </View>
+            <TouchableOpacity
+              style={styles.primaryRegBtn}
+              onPress={async () => {
+                const trimmed = nameInput.trim();
+                if (trimmed.length === 0) { setShowNameEdit(false); return; }
+                setPlayerName(trimmed);
+                await savePlayerName(trimmed);
+                setShowNameEdit(false);
+              }}
+            >
+              <Text style={styles.primaryRegBtnText}>💾 保存</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.skipLinkBtn} onPress={() => setShowNameEdit(false)}>
+              <Text style={styles.skipLinkBtnText}>キャンセル</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Changelog Modal */}
+      {showChangelog && (
+        <View style={styles.overlay}>
+          <View style={styles.settingsBox}>
+            <Text style={styles.rankingTitle}>📋 更新履歴</Text>
+            <ScrollView style={styles.settingsScroll} contentContainerStyle={styles.settingsScrollContent}>
+              <View style={styles.changelogVersion}>
+                <Text style={styles.changelogVersionTitle}>v1.2.1（2026/04/26）</Text>
+                <Text style={styles.changelogItem}>・AdMob広告対応（バナー＋リワード）</Text>
+                <Text style={styles.changelogItem}>・効果音ON/OFF設定追加</Text>
+                <Text style={styles.changelogItem}>・プレイヤー名の変更機能追加</Text>
+                <Text style={styles.changelogItem}>・設定画面のレイアウト改善</Text>
+                <Text style={styles.changelogItem}>・更新履歴UIを追加</Text>
+              </View>
+              <View style={styles.changelogVersion}>
+                <Text style={styles.changelogVersionTitle}>v1.2.0</Text>
+                <Text style={styles.changelogItem}>・スキルUX改修（確認POPUP・盤面上部バナー）</Text>
+                <Text style={styles.changelogItem}>・チュートリアルTips整理</Text>
+                <Text style={styles.changelogItem}>・初心者モード設定追加</Text>
+              </View>
+              <View style={styles.changelogVersion}>
+                <Text style={styles.changelogVersionTitle}>v1.1.0</Text>
+                <Text style={styles.changelogItem}>・グローバルランキング実装（Firebase）</Text>
+                <Text style={styles.changelogItem}>・岩ブロック追加（難易度スケーリング）</Text>
+                <Text style={styles.changelogItem}>・スキル強化＋演出エスカレート</Text>
+                <Text style={styles.changelogItem}>・タイトル画面追加</Text>
+              </View>
+              <View style={styles.changelogVersion}>
+                <Text style={styles.changelogVersionTitle}>v1.0.0</Text>
+                <Text style={styles.changelogItem}>・初版リリース</Text>
+                <Text style={styles.changelogItem}>・5×7マッチパズル＋スキルストック</Text>
+                <Text style={styles.changelogItem}>・連鎖ボーナス・レベルアップ・手数復活</Text>
+              </View>
+            </ScrollView>
+            <View style={styles.modalButtonRow}>
+              <TouchableOpacity style={styles.modalBackBtn} onPress={() => { setShowChangelog(false); setShowSettings(true); }}>
+                <Text style={styles.modalBackBtnText}>← 設定に戻る</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setShowChangelog(false)}>
+                <Text style={styles.skillHelpCloseText}>とじる</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       )}
@@ -1895,10 +2098,24 @@ const styles = StyleSheet.create({
   skipLinkBtn: { paddingHorizontal: 12, paddingVertical: 8, marginTop: 2 },
   skipLinkBtnText: { color: '#888', fontSize: 12, textDecorationLine: 'underline' },
   registeredName: { color: '#aaa', fontSize: 13, marginBottom: 12 },
-  settingsBox: { backgroundColor: '#1a1a3e', borderRadius: 16, padding: 24, borderWidth: 2, borderColor: '#FFD700', width: TOTAL_WIDTH - 16, maxWidth: 340 },
-  settingsRow: { backgroundColor: 'rgba(15,52,96,0.6)', borderRadius: 8, padding: 12, marginBottom: 12 },
+  settingsBox: { backgroundColor: '#1a1a3e', borderRadius: 16, padding: 24, borderWidth: 2, borderColor: '#FFD700', width: TOTAL_WIDTH - 16, maxWidth: 340, maxHeight: '85%' },
+  settingsScroll: { width: '100%', marginVertical: 8 },
+  settingsScrollContent: { paddingBottom: 8 },
+  settingsSectionHeader: { color: '#FFD700', fontSize: 12, fontWeight: 'bold', letterSpacing: 1, marginTop: 14, marginBottom: 8, paddingLeft: 4, borderLeftWidth: 3, borderLeftColor: '#FFD700' },
+  settingsSectionHeaderDanger: { color: '#FF5252', borderLeftColor: '#FF5252' },
+  settingsActionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(15,52,96,0.6)', borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12, marginBottom: 8 },
+  settingsSwitchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(15,52,96,0.6)', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 12, marginBottom: 8 },
+  settingsActionLabelArea: { flexDirection: 'row', alignItems: 'center', flex: 1, gap: 10 },
+  settingsActionIcon: { fontSize: 22 },
+  settingsActionTextArea: { flex: 1 },
   settingsLabel: { color: '#fff', fontSize: 14, fontWeight: 'bold' },
+  settingsActionDesc: { color: '#aaa', fontSize: 11, marginTop: 2 },
+  settingsChevron: { color: '#FFD700', fontSize: 20, fontWeight: 'bold', marginLeft: 8 },
+  settingsRow: { backgroundColor: 'rgba(15,52,96,0.6)', borderRadius: 8, padding: 12, marginBottom: 12 },
   settingsValue: { color: '#FFD700', fontSize: 12, marginTop: 4 },
+  changelogVersion: { backgroundColor: 'rgba(15,52,96,0.6)', borderRadius: 8, padding: 12, marginBottom: 10 },
+  changelogVersionTitle: { color: '#FFD700', fontSize: 14, fontWeight: 'bold', marginBottom: 6 },
+  changelogItem: { color: '#ddd', fontSize: 12, lineHeight: 20 },
   howToSection: { marginBottom: 14 },
   howToHeading: { color: '#FFD700', fontSize: 14, fontWeight: 'bold', marginBottom: 4 },
   howToText: { color: '#ddd', fontSize: 12, lineHeight: 20, paddingLeft: 8 },
@@ -2007,4 +2224,8 @@ const styles = StyleSheet.create({
   skillHelpDesc: { color: '#eee', fontSize: 12 },
   skillHelpClose: { marginTop: 16, backgroundColor: '#0f3460', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
   skillHelpCloseText: { color: '#fff', fontSize: 14, fontWeight: 'bold' },
+  modalButtonRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
+  modalBackBtn: { flex: 1, backgroundColor: '#FFD700', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
+  modalBackBtnText: { color: '#000', fontSize: 14, fontWeight: 'bold' },
+  modalCloseBtn: { flex: 1, backgroundColor: '#0f3460', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
 });
