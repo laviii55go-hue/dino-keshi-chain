@@ -2,11 +2,10 @@
   "expo": {
     "name": "dino-keshi-chain",
     "slug": "dino-keshi-chain",
-    "version": "1.2.1",
+    "version": "1.3.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -15,14 +14,14 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.harveststudio.dinokeshichain",
-      "buildNumber": "2",
+      "buildNumber": "3",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
       "package": "com.harveststudio.dinokeshichain",
-      "versionCode": 7,
+      "versionCode": 9,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#1a5c2e"
