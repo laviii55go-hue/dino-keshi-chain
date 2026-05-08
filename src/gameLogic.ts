@@ -19,6 +19,14 @@ export const LEVEL_TABLE: [number, number][] = [
   [6400, 3],   // Lv10→11
 ];
 
+// Lv11以降 比例式（案 a・2026/05/08 改定）
+// 増分 Δ(L→L+1) = 1500 + (L − 10) × 50
+// 累計 S(L) = 6400 + 1500 × (L − 11) + 25 × (L − 11) × (L − 10)  for L ≥ 11
+function cumulativeScoreForLevel(L: number): number {
+  if (L <= 11) return 6400;
+  return 6400 + 1500 * (L - 11) + 25 * (L - 11) * (L - 10);
+}
+
 // 現在のレベルを算出（1始まり）
 export function getLevel(totalScore: number): number {
   let level = 1;
@@ -26,10 +34,11 @@ export function getLevel(totalScore: number): number {
     if (totalScore >= threshold) level++;
     else break;
   }
-  // Lv11以降: 6400 + 1500刻み
+  // Lv11以降: 比例式（案 a）でループ判定
   if (level > LEVEL_TABLE.length) {
-    const beyond = totalScore - LEVEL_TABLE[LEVEL_TABLE.length - 1][0];
-    level = LEVEL_TABLE.length + 1 + Math.floor(beyond / 1500);
+    while (totalScore >= cumulativeScoreForLevel(level + 1)) {
+      level++;
+    }
   }
   return level;
 }
@@ -40,8 +49,8 @@ export function getNextLevelScore(currentLevel: number): number {
   if (idx < LEVEL_TABLE.length) {
     return LEVEL_TABLE[idx][0];
   }
-  // Lv11以降: 6400 + (level - 10) * 1500
-  return 6400 + (currentLevel - 10) * 1500;
+  // Lv11以降: 案 a 比例式
+  return cumulativeScoreForLevel(currentLevel + 1);
 }
 
 // レベルアップ時の復活回数を返す
@@ -69,11 +78,28 @@ export const ROCK_TYPE = -1;
 export const ROCK_DESTROY_SCORE = 30;
 export const ROCK_SPAWN_COUNT_PER_MILESTONE = 3;
 
-// レベルに応じた新規スポーン岩のHP
+// 盤面の岩同時最大数（2026/05/08 追加・詰みリスク防止）
+// 35セル中 15個 = 約43% を上限とする（5/8 慶さん判断）
+export const MAX_BOARD_ROCKS = 15;
+
+// レベルに応じた新規スポーン岩のHP（2026/05/08 改定・段階導入）
 export function getRockHpByLevel(level: number): number {
   if (level <= 10) return 1;
   if (level <= 20) return 2;
-  return 3;
+  if (level <= 29) return 3;
+  if (level <= 49) return 4; // 5/8 追加
+  return 5;                  // 5/8 追加（Lv50以降）
+}
+
+// 盤面上の岩セルをカウント
+export function countBoardRocks(board: DinoCell[][]): number {
+  let count = 0;
+  for (const row of board) {
+    for (const cell of row) {
+      if (cell.type === ROCK_TYPE) count++;
+    }
+  }
+  return count;
 }
 
 // 岩スポーン条件
@@ -96,18 +122,27 @@ export function skillBreaksRock(skillType: number): boolean {
 export const MAX_STOCK = 9;
 export const SKILL_TRIGGER_COUNT = 6; // 旧グローバル値（後方互換用・新ロジックは下記を使用）
 
-// スキル獲得に必要な最小マッチ個数（スキル種別ごと・2026/04/24 案B）
+// スキル獲得に必要な最小マッチ個数（スキル種別ごと・2026/04/24 案B → 2026/05/08 改定）
+// 2026/05/08: ステゴを 5→6 に引き上げ（強スキル枠の発動頻度バランス調整）
 export const SKILL_TRIGGER_COUNTS: Record<number, number> = {
   0: 8, // ティラノ（最強・草食全消し）
-  1: 5, // ステゴ（中弱・種類全消し）
+  1: 6, // ステゴ（中・種類全消し・5/8 5→6）
   2: 6, // プテラ（中・ランダム10）
   3: 5, // トリケラ（弱・横一列）
   4: 6, // スピノ（中・周囲8マス）
   5: 6, // パキケファロ（中〜強・縦一直線+着弾周囲）
 };
 
-export function getSkillTriggerCount(type: number): number {
-  return SKILL_TRIGGER_COUNTS[type] ?? SKILL_TRIGGER_COUNT;
+// Lv50 以降は全スキル必要マッチ数を +2（5/8 改定・後半難易度上昇）
+export const SKILL_TRIGGER_LEVEL_THRESHOLD = 50;
+export const SKILL_TRIGGER_LATE_BONUS = 2;
+
+export function getSkillTriggerCount(type: number, level: number = 1): number {
+  const base = SKILL_TRIGGER_COUNTS[type] ?? SKILL_TRIGGER_COUNT;
+  if (level >= SKILL_TRIGGER_LEVEL_THRESHOLD) {
+    return base + SKILL_TRIGGER_LATE_BONUS;
+  }
+  return base;
 }
 
 export interface SkillStock {

@@ -39,6 +39,8 @@ import {
   ROCK_TYPE,
   ROCK_DESTROY_SCORE,
   ROCK_SPAWN_COUNT_PER_MILESTONE,
+  MAX_BOARD_ROCKS,
+  countBoardRocks,
   getRockHpByLevel,
   shouldSpawnRocks,
   skillBreaksRock,
@@ -470,13 +472,14 @@ export default function Board() {
       const newScore = accScore + scoreGain;
       setScore(newScore);
 
-      // スキル獲得判定（恐竜タイプごとに必要個数が異なる・案B採用）
+      // スキル獲得判定（恐竜タイプごとに必要個数が異なる・5/8 Lv50+ で +2 適用）
+      const currentLevel = levelR.current;
       const newSkills: SkillStock[] = [];
       for (const m of matches) {
         const [mr, mc] = m.cells[0];
         const dinoType = currentBoard[mr][mc].type;
         if (dinoType === ROCK_TYPE) continue;
-        if (m.cells.length >= getSkillTriggerCount(dinoType)) {
+        if (m.cells.length >= getSkillTriggerCount(dinoType, currentLevel)) {
           newSkills.push(createSkillStock(dinoType));
         }
       }
@@ -496,7 +499,12 @@ export default function Board() {
       const oldLevel = levelR.current;
       const projectedLevel = getLevel(newScore);
       const willSpawnRocks = projectedLevel > oldLevel && shouldSpawnRocks(projectedLevel);
-      const rockCount = willSpawnRocks ? ROCK_SPAWN_COUNT_PER_MILESTONE : 0;
+      // 盤面の岩同時最大数（MAX_BOARD_ROCKS=15）を超えないようにスポーン量を抑制（5/8 追加）
+      const existingRocks = countBoardRocks(boardWithRockDmg);
+      const remainingCapacity = Math.max(0, MAX_BOARD_ROCKS - existingRocks);
+      const rockCount = willSpawnRocks
+        ? Math.min(ROCK_SPAWN_COUNT_PER_MILESTONE, remainingCapacity)
+        : 0;
       const rockHp = willSpawnRocks ? getRockHpByLevel(projectedLevel) : 1;
 
       setPhase('remove');
@@ -1855,6 +1863,22 @@ export default function Board() {
           <View style={styles.settingsBox}>
             <Text style={styles.rankingTitle}>📋 更新履歴</Text>
             <ScrollView style={styles.settingsScroll} contentContainerStyle={styles.settingsScrollContent}>
+              <View style={styles.changelogVersion}>
+                <Text style={styles.changelogVersionTitle}>v1.4.0（2026/05/08）</Text>
+                <Text style={styles.changelogItem}>・難易度バランス調整（レベル後半の進行カーブを比例式に）</Text>
+                <Text style={styles.changelogItem}>・岩HP段階追加（Lv30で4・Lv50で5）</Text>
+                <Text style={styles.changelogItem}>・Lv50以降のスキル発動マッチ数+2（ステゴは初期5→6に調整）</Text>
+                <Text style={styles.changelogItem}>・盤面の岩同時上限15個（詰み防止）</Text>
+              </View>
+              <View style={styles.changelogVersion}>
+                <Text style={styles.changelogVersionTitle}>v1.3.1（2026/04/30）</Text>
+                <Text style={styles.changelogItem}>・iOS版で広告表示前のトラッキング許可ダイアログを実装</Text>
+              </View>
+              <View style={styles.changelogVersion}>
+                <Text style={styles.changelogVersionTitle}>v1.3.0（2026/04/30）</Text>
+                <Text style={styles.changelogItem}>・iOS 26 SDK 対応（最新OS要件への準拠）</Text>
+                <Text style={styles.changelogItem}>・効果音システム更新（再生品質の安定化）</Text>
+              </View>
               <View style={styles.changelogVersion}>
                 <Text style={styles.changelogVersionTitle}>v1.2.1（2026/04/26）</Text>
                 <Text style={styles.changelogItem}>・AdMob広告対応（バナー＋リワード）</Text>
