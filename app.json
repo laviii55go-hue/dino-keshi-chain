@@ -16,12 +16,14 @@
       "bundleIdentifier": "com.harveststudio.dinokeshichain",
       "buildNumber": "4",
       "infoPlist": {
+        "CFBundleDevelopmentRegion": "ja",
+        "CFBundleLocalizations": ["ja"],
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
       "package": "com.harveststudio.dinokeshichain",
-      "versionCode": 10,
+      "versionCode": 11,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#1a5c2e"
