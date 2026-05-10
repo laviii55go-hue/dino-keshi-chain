@@ -49,6 +49,10 @@ async function initAdsAndTracking(): Promise<void> {
 
   try {
     const ads = require('react-native-google-mobile-ads');
+    // テスト端末登録: 慶さん iPhone 17e（5/10 設定・自己クリック判定回避・反省ノート #053）
+    await ads.default().setRequestConfiguration({
+      testDeviceIdentifiers: ['EMULATOR', 'CB9F5C0B-4161-4A05-926D-5492A2921C53'],
+    });
     await ads.default().initialize();
   } catch (e) {
     console.warn('[Ads] mobileAds().initialize() failed:', e);
