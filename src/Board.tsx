@@ -31,6 +31,7 @@ import {
   getNextLevelScore,
   getLevelUpBonus,
   MAX_STOCK,
+  DINO_TYPES,
   getSkillTriggerCount,
   DINO_NAMES,
   HERBIVORES,
@@ -81,8 +82,13 @@ import {
   setSoundVolume,
 } from './sound';
 import { fetchGlobalRankings, submitGlobalScore, type GlobalRankEntry, type RankPeriod } from './firebase';
+import { showRewardedAd } from './RewardedAdManager';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+// リワード広告: 復活で回復する手数／スキル付与の1ゲーム上限回数
+const REVIVE_MOVES = 5;
+const MAX_AD_SKILL_GRANTS = 3;
 
 // チュートリアルTips（盤面下で順次スクロール表示）— 2026/04/25 改修: 基本ルール6件に絞り込み（スキル個別効果は確認POPUPへ移動）
 const TUTORIAL_TIPS: { icon: string; text: string }[] = [
@@ -149,6 +155,10 @@ export default function Board() {
   // スキル確認POPUP用: 慶さんの合意で「恐竜ごとインストール後初回のみ」表示・alwaysConfirmSkill=ONで常時表示
   const [pendingSkill, setPendingSkill] = useState<{ type: number; index: number } | null>(null);
   const [pendingGameOver, setPendingGameOver] = useState(false);
+  // リワード広告: 復活（1ゲーム1回）とスキル付与（1ゲーム最大 MAX_AD_SKILL_GRANTS 回）
+  const [reviveUsed, setReviveUsed] = useState(false);
+  const [showReviveOffer, setShowReviveOffer] = useState(false);
+  const [adSkillGrants, setAdSkillGrants] = useState(0);
   const [skillCutscene, setSkillCutscene] = useState<number | null>(null);
   const skillSlideX = useRef(new Animated.Value(-300)).current;
   const skillCutsceneOpacity = useRef(new Animated.Value(0)).current;
@@ -181,6 +191,8 @@ export default function Board() {
   const selectedR = useRef(selectedCell);
   const phaseR = useRef(phase);
   const gameOverR = useRef(gameOver);
+  const reviveUsedR = useRef(reviveUsed);
+  const adSkillGrantsR = useRef(adSkillGrants);
 
   useEffect(() => { boardR.current = board; }, [board]);
   useEffect(() => { movesR.current = moves; }, [moves]);
@@ -191,6 +203,8 @@ export default function Board() {
   useEffect(() => { gameOverR.current = gameOver; }, [gameOver]);
   useEffect(() => { activeSkillR.current = activeSkill; }, [activeSkill]);
   useEffect(() => { skillStockR.current = skillStock; }, [skillStock]);
+  useEffect(() => { reviveUsedR.current = reviveUsed; }, [reviveUsed]);
+  useEffect(() => { adSkillGrantsR.current = adSkillGrants; }, [adSkillGrants]);
 
   // ランキングポップを開く共通ハンドラ（ローカル＋グローバル daily を同時ロード）
   const openRankingModal = useCallback(async () => {
@@ -324,6 +338,52 @@ export default function Board() {
   const triggerGameOverRef = useRef(triggerGameOver);
   triggerGameOverRef.current = triggerGameOver;
 
+  // 手数切れ時: 復活可能なら復活オファー、不能なら通常ゲームオーバー
+  // （triggerGameOver は最大1回のみ呼ばれる構造 → ランキング二重登録を防止）
+  const handleOutOfMoves = useCallback(() => {
+    if (!reviveUsedR.current) {
+      setShowReviveOffer(true);
+    } else {
+      triggerGameOverRef.current();
+    }
+  }, []);
+  const handleOutOfMovesRef = useRef(handleOutOfMoves);
+  handleOutOfMovesRef.current = handleOutOfMoves;
+
+  // 復活オファー: リワード広告視聴で手数を回復し続行（盤面・スコア・レベル・スキル維持）
+  const onReviveByAd = useCallback(async () => {
+    const rewarded = await showRewardedAd();
+    setShowReviveOffer(false);
+    if (rewarded) {
+      setReviveUsed(true);
+      setMoves(REVIVE_MOVES);
+      setPhase('idle');
+    } else {
+      triggerGameOverRef.current();
+    }
+  }, []);
+
+  const onGiveUp = useCallback(() => {
+    setShowReviveOffer(false);
+    triggerGameOverRef.current();
+  }, []);
+
+  // スキル付与: リワード広告視聴でランダムなスキルを1個ストックに追加
+  // （1ゲーム MAX_AD_SKILL_GRANTS 回まで・スキル枠満杯時は付与しない）
+  const onWatchAdForSkill = useCallback(async () => {
+    if (adSkillGrantsR.current >= MAX_AD_SKILL_GRANTS) return;
+    if (skillStockR.current.length >= MAX_STOCK) return;
+    const rewarded = await showRewardedAd();
+    if (rewarded) {
+      const type = Math.floor(Math.random() * DINO_TYPES);
+      setSkillStock(prev => {
+        const updated = [...prev, createSkillStock(type)];
+        return updated.length > MAX_STOCK ? updated.slice(updated.length - MAX_STOCK) : updated;
+      });
+      setAdSkillGrants(n => n + 1);
+    }
+  }, []);
+
   const handleNameRegister = useCallback(async () => {
     const name = nameInput.trim() || 'プレイヤー';
     setPlayerName(name);
@@ -370,6 +430,9 @@ export default function Board() {
     setSkillStock([]);
     setPhase('idle');
     setGameOver(false);
+    setReviveUsed(false);
+    setShowReviveOffer(false);
+    setAdSkillGrants(0);
     setLastChain(0);
     setMatchedSet(new Set());
     setLevelUpMsg(null);
@@ -415,7 +478,7 @@ export default function Board() {
         }, 800);
       }
       if (currentMoves <= 0 && skillStockR.current.length === 0) {
-        triggerGameOverRef.current();
+        handleOutOfMovesRef.current();
       }
       return;
     }
@@ -569,7 +632,7 @@ export default function Board() {
       playShuffle();
       setBoard(swapped);
       if (newMoves <= 0 && skillStockR.current.length === 0) {
-        setTimeout(() => triggerGameOverRef.current(), 200);
+        setTimeout(() => handleOutOfMovesRef.current(), 200);
       }
       return;
     }
@@ -1264,6 +1327,12 @@ export default function Board() {
             );
           })}
         </View>
+        {adSkillGrants < MAX_AD_SKILL_GRANTS && skillStock.length < MAX_STOCK && phase === 'idle' && !gameOver && (
+          <TouchableOpacity style={styles.adSkillButton} onPress={onWatchAdForSkill}>
+            <Text style={styles.adSkillButtonIcon}>📺</Text>
+            <Text style={styles.adSkillButtonLabel}>スキル</Text>
+          </TouchableOpacity>
+        )}
         </View>
 
         {/* Board */}
@@ -1938,6 +2007,23 @@ export default function Board() {
         </View>
       )}
 
+      {/* Revive Offer — 手数切れ時の復活オファー（リワード広告・1ゲーム1回） */}
+      {showReviveOffer && (
+        <View style={styles.overlay}>
+          <View style={styles.reviveBox}>
+            <Text style={styles.reviveTitle}>手数がなくなりました</Text>
+            <Text style={styles.reviveScoreText}>スコア: {score.toLocaleString()}</Text>
+            <Text style={styles.reviveDesc}>広告を見ると手数 +{REVIVE_MOVES} で続けられます{'\n'}（盤面・スコア・レベルはそのまま）</Text>
+            <TouchableOpacity style={styles.reviveAdButton} onPress={onReviveByAd}>
+              <Text style={styles.reviveAdButtonText}>📺 広告を見て続ける（手数+{REVIVE_MOVES}）</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.reviveGiveUpButton} onPress={onGiveUp}>
+              <Text style={styles.reviveGiveUpText}>あきらめる</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {/* Game Over */}
       {gameOver && !showNamePrompt && !showRanking && (
         <View style={styles.overlay}>
@@ -2252,4 +2338,17 @@ const styles = StyleSheet.create({
   modalBackBtn: { flex: 1, backgroundColor: '#FFD700', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
   modalBackBtnText: { color: '#000', fontSize: 14, fontWeight: 'bold' },
   modalCloseBtn: { flex: 1, backgroundColor: '#0f3460', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
+  // リワード広告: 復活オファー
+  reviveBox: { backgroundColor: '#1a1a2e', borderRadius: 16, padding: 28, alignItems: 'center', borderWidth: 2, borderColor: '#FFD700', width: '86%', maxWidth: 360 },
+  reviveTitle: { color: '#FFD700', fontSize: 20, fontWeight: 'bold', marginBottom: 8 },
+  reviveScoreText: { color: '#fff', fontSize: 16, marginBottom: 10 },
+  reviveDesc: { color: '#ccc', fontSize: 13, lineHeight: 19, textAlign: 'center', marginBottom: 18 },
+  reviveAdButton: { backgroundColor: '#FFD700', paddingHorizontal: 20, paddingVertical: 14, borderRadius: 10, alignSelf: 'stretch', alignItems: 'center', marginBottom: 10 },
+  reviveAdButtonText: { color: '#1a1a2e', fontSize: 15, fontWeight: 'bold' },
+  reviveGiveUpButton: { paddingVertical: 8, alignSelf: 'stretch', alignItems: 'center' },
+  reviveGiveUpText: { color: '#888', fontSize: 14, fontWeight: 'bold' },
+  // リワード広告: スキル付与ボタン（スキルストック列の下）
+  adSkillButton: { marginTop: 8, backgroundColor: 'rgba(255,215,0,0.15)', borderWidth: 1, borderColor: '#FFD700', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 4, alignItems: 'center', alignSelf: 'stretch' },
+  adSkillButtonIcon: { fontSize: 16 },
+  adSkillButtonLabel: { color: '#FFD700', fontSize: 10, fontWeight: 'bold', marginTop: 2 },
 });
