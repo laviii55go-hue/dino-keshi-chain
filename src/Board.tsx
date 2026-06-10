@@ -1933,6 +1933,12 @@ export default function Board() {
             <Text style={styles.rankingTitle}>📋 更新履歴</Text>
             <ScrollView style={styles.settingsScroll} contentContainerStyle={styles.settingsScrollContent}>
               <View style={styles.changelogVersion}>
+                <Text style={styles.changelogVersionTitle}>v1.5.0（2026/06/10）</Text>
+                <Text style={styles.changelogItem}>・手数がなくなっても、広告を見ると復活して続きから遊べるように（1ゲーム1回）</Text>
+                <Text style={styles.changelogItem}>・広告を見るとランダムなスキルを1個もらえるように（1ゲーム3回まで）</Text>
+                <Text style={styles.changelogItem}>・細かな改善と不具合修正</Text>
+              </View>
+              <View style={styles.changelogVersion}>
                 <Text style={styles.changelogVersionTitle}>v1.4.0（2026/05/08）</Text>
                 <Text style={styles.changelogItem}>・難易度バランス調整（レベル後半の進行カーブを比例式に）</Text>
                 <Text style={styles.changelogItem}>・岩HP段階追加（Lv30で4・Lv50で5）</Text>
